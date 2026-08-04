@@ -129,6 +129,7 @@ class StructuredOutputTrajectoryJudge:
         self.max_attempts = max_attempts
         self.cache = cache
         self.metrics = JudgeExecutionMetrics()
+        self.last_cache_key: str | None = None
 
     async def evaluate(
         self,
@@ -146,6 +147,7 @@ class StructuredOutputTrajectoryJudge:
             judge_version=self.judge_version,
             rubric_version=self.rubric_version,
         )
+        self.last_cache_key = cache_key
         if self.cache is not None:
             cached = self.cache.get(cache_key)
             if cached is not None:

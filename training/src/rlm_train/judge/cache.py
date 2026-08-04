@@ -125,6 +125,10 @@ class FeedbackCache(Protocol):
         """Store validated feedback under ``key`` and return ``None``."""
         ...
 
+    def manifest(self) -> dict[str, Any]:
+        """Return content keys and backend identity without cached feedback payloads."""
+        ...
+
 
 class MemoryFeedbackCache:
     """Store trajectory feedback in a process-local dictionary.
@@ -164,6 +168,14 @@ class MemoryFeedbackCache:
             ``None``.
         """
         self._items[key] = feedback
+
+    def manifest(self) -> dict[str, Any]:
+        """Return safe process-local cache provenance."""
+        return {
+            "backend": "memory",
+            "count": len(self._items),
+            "keys": sorted(self._items),
+        }
 
 
 class SQLiteFeedbackCache:
@@ -226,6 +238,19 @@ class SQLiteFeedbackCache:
                 (key, feedback.model_dump_json()),
             )
             connection.commit()
+
+    def manifest(self) -> dict[str, Any]:
+        """Return persistent cache keys without duplicating private judge context."""
+        with closing(self.connect()) as connection:
+            rows = connection.execute(
+                "SELECT cache_key FROM trajectory_feedback ORDER BY cache_key"
+            ).fetchall()
+        return {
+            "backend": "sqlite",
+            "path": str(self.path.resolve()),
+            "count": len(rows),
+            "keys": [str(row[0]) for row in rows],
+        }
 
 
 __all__ = [

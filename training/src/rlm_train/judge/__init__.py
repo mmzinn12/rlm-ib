@@ -28,6 +28,11 @@ from rlm_train.judge.context import (
     PrivilegedJudgeContext,
 )
 from rlm_train.judge.privileged import PrivilegedContextTrajectoryJudge
+from rlm_train.judge.providers import (
+    DeterministicFakeStructuredJudgeClient,
+    JudgeProviderCall,
+    OpenAIStructuredJudgeClient,
+)
 from rlm_train.judge.schema import (
     DiagnosticQuestionTeacherFeedback,
     FactualQuestionTeacherFeedback,
@@ -50,6 +55,7 @@ __all__ = [
     "DiagnosticQuestionTeacherFeedback",
     "FactualQuestionTeacherFeedback",
     "InformationValueFeedback",
+    "JudgeProviderCall",
     "JudgeExecutionMetrics",
     "JudgeResponseError",
     "MemoryFeedbackCache",
@@ -61,6 +67,8 @@ __all__ = [
     "QuestionTeacherFeedback",
     "TeacherFeedbackMode",
     "SQLiteFeedbackCache",
+    "DeterministicFakeStructuredJudgeClient",
+    "OpenAIStructuredJudgeClient",
     "StructuredJudgeClient",
     "StructuredJudgeRequest",
     "StructuredOutputTrajectoryJudge",

@@ -98,5 +98,30 @@ uv run rlm-train-ood-dry-run \
   --output training/outputs/ood-robust-synthetic-dry-run
 ```
 
+## Standalone single-GPU / Colab path
+
+`src/rlm_train/colab/` is an importable, Prime-free Transformers training path. It
+provides pinned runtime preflight, exact-token generation, LoRA loading, grouped GRPO,
+question-masked SDPO composition, an API-backed strict judge plus deterministic fake,
+fixed-teacher target caching, optional Gram anchoring, observer-compatible real-model
+evaluation, and atomic full-state checkpoints.
+
+The checked-in smoke profile uses a pinned SmolLM2 revision, two short rollouts, and one
+optimizer step:
+
+```bash
+pip install -e . -e './training[colab]'
+rlm-train-colab training/configs/colab-smoke.toml
+```
+
+The generic command-line dataset launcher runs the GRPO baseline. Traced RLM callers use
+`build_fixed_sdpo_components` and `SingleGPUTrainer` with `TrajectoryQuestionTargetProvider`,
+`MaskedQuestionSDPOLossBuilder`, and optionally `TransformersGramLossBuilder`; SDPO
+requires a recorded trajectory and an exact question-token mask and will fail rather
+than fall back to whole-response distillation.
+
+See [`colab/README.md`](colab/README.md) and
+[`colab/rlm_training.ipynb`](colab/rlm_training.ipynb) for the fresh-runtime entry point.
+
 ## Examples
 * [Qwen3-30B-A3B-Instruct-0527] on the original suite of tasks: [https://huggingface.co/mit-oasys/rlm-qwen3-30b-a3b-v0.1](https://huggingface.co/mit-oasys/rlm-qwen3-30b-a3b-v0.1)

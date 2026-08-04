@@ -1,0 +1,71 @@
+schema_version = 1
+profile = "train"
+execution_backend = "transformers"
+experiment_preset = "grpo"
+seed = 17
+
+[model]
+model_id = "HuggingFaceTB/SmolLM2-135M-Instruct"
+model_revision = "12fd25f77366fa6b3b4b768ec3050bf629380bac"
+precision = "fp16"
+quantization = "none"
+max_context_length = 2048
+lora_rank = 16
+lora_alpha = 32
+lora_dropout = 0.05
+lora_target_modules = ["q_proj", "v_proj"]
+
+[generation]
+prompt_template_version = "chat-v1"
+system_prompt = "Solve the problem carefully and end with FINAL: followed by the answer."
+use_chat_template = true
+max_prompt_tokens = 512
+max_new_tokens = 128
+rollouts_per_prompt = 4
+temperature = 0.8
+top_p = 0.95
+do_sample = true
+allow_prompt_truncation = false
+
+[optimization]
+learning_rate = 0.0002
+weight_decay = 0.0
+batch_size = 1
+gradient_accumulation_steps = 4
+max_optimizer_steps = 100
+warmup_steps = 5
+scheduler = "cosine"
+max_gradient_norm = 1.0
+grpo_clip_epsilon = 0.2
+policy_weight = 1.0
+sdpo_weight = 0.0
+gram_weight = 0.0
+kl_coefficient = 0.01
+
+[dataset]
+path = "training/benchmarks/synthetic-arithmetic.jsonl"
+name = "synthetic-arithmetic-train"
+version = "v1"
+split = "train"
+answer_pattern = "FINAL:\\s*(?P<answer>-?\\d+)\\s*$"
+case_sensitive = true
+rubric = "exact_match"
+
+[judge]
+provider = "fake"
+model = "deterministic-fake"
+model_revision = "v1"
+api_key_environment = "OPENAI_API_KEY"
+max_attempts = 2
+prompt_schema_version = "trajectory-feedback-v1"
+
+[teacher_runtime]
+residency = "cpu_offload"
+cache_directory = "teacher-targets"
+fingerprint_interval = 20
+
+[output]
+output_directory = "training/outputs/colab"
+run_name = "train"
+checkpoint_every_steps = 20
+evaluate_every_steps = 20
