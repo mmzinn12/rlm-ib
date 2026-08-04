@@ -20,6 +20,19 @@ FakeQueryBatched = Callable[[list[str], "Any"], list[str] | Awaitable[list[str]]
 
 @dataclass
 class ClientHandle:
+    """Associate one rollout with its client, sampling, tracing, and test hooks.
+
+    Attributes:
+        client: Verifiers completion client used for real subcalls.
+        model: Default subcall model name.
+        sampling_args: Optional completion sampling arguments.
+        record_call: Optional callback receiving prompt, response, usage, and trace data.
+        max_concurrent: Maximum real calls executing concurrently for this rollout.
+        fake_query: Optional single-call implementation for tests or custom routing.
+        fake_query_batched: Optional batched implementation for tests or custom routing.
+        state_ref: Optional rollout state passed to fake implementations.
+    """
+
     client: Any
     model: str
     sampling_args: dict[str, Any] | None = None
@@ -80,6 +93,13 @@ def _coerce_messages(prompt: str | list) -> list:
 
 
 class SubLLMProxy:
+    """Route worker HTTP requests to rollout-scoped LM clients and trace callbacks.
+
+    Single and batched endpoints validate trace metadata, execute fake or real client
+    calls, and invoke ``ClientHandle.record_call`` after each completed response. Batched
+    calls retain one call order with distinct batch indices from the worker.
+    """
+
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
         self._host = host
         self._port = port
@@ -130,6 +150,15 @@ class SubLLMProxy:
         self._semaphores.pop(rollout_id, None)
 
     async def _handle_single(self, request: web.Request) -> web.Response:
+        """Handle one subcall and forward its trace context to the recorder callback.
+
+        Args:
+            request: Aiohttp request containing prompt, optional model, and a trace object.
+
+        Returns:
+            JSON response containing generated text and usage metadata, or a 4xx payload
+            for unknown rollouts, malformed JSON, or invalid trace context.
+        """
         rollout_id = request.match_info["rollout_id"]
         handle = self._handles.get(rollout_id)
         if handle is None:
@@ -142,6 +171,9 @@ class SubLLMProxy:
         if prompt is None:
             return web.json_response({"error": "missing 'prompt'"}, status=400)
         model = body.get("model") or handle.model
+        trace_context = body.get("trace_context") or {}
+        if not isinstance(trace_context, dict):
+            return web.json_response({"error": "trace_context must be an object"}, status=400)
         try:
             text, meta = await self._completion(handle, prompt, model)
         except Exception as e:  # noqa: BLE001
@@ -149,12 +181,30 @@ class SubLLMProxy:
             return web.json_response({"error": str(e)})
         if handle.record_call is not None:
             try:
-                handle.record_call({"model": model, "prompt": prompt, "response": text, **meta})
+                handle.record_call(
+                    {
+                        "model": model,
+                        "prompt": prompt,
+                        "response": text,
+                        "trace_context": trace_context,
+                        **meta,
+                    }
+                )
             except Exception:
                 logger.exception("record_call failed")
         return web.json_response({"response": text, **meta})
 
     async def _handle_batched(self, request: web.Request) -> web.Response:
+        """Handle aligned prompts and trace contexts concurrently.
+
+        Args:
+            request: Aiohttp request containing ``prompts`` and equally sized
+                ``trace_contexts`` lists.
+
+        Returns:
+            JSON response with one output per input prompt. Each completed call is sent
+            independently to the rollout's trace callback.
+        """
         rollout_id = request.match_info["rollout_id"]
         handle = self._handles.get(rollout_id)
         if handle is None:
@@ -167,6 +217,17 @@ class SubLLMProxy:
         if not isinstance(prompts, list):
             return web.json_response({"error": "missing 'prompts' list"}, status=400)
         model = body.get("model") or handle.model
+        trace_contexts = body.get("trace_contexts")
+        if trace_contexts is None:
+            trace_contexts = [{} for _ in prompts]
+        if (
+            not isinstance(trace_contexts, list)
+            or len(trace_contexts) != len(prompts)
+            or any(not isinstance(context, dict) for context in trace_contexts)
+        ):
+            return web.json_response(
+                {"error": "trace_contexts must align with prompts"}, status=400
+            )
 
         if handle.fake_query_batched is not None:
             try:
@@ -179,9 +240,16 @@ class SubLLMProxy:
                 if not isinstance(responses, list) or len(responses) != len(prompts):
                     return web.json_response({"error": "fake_query_batched returned wrong shape"})
                 if handle.record_call is not None:
-                    for p, r in zip(prompts, responses, strict=True):
+                    for p, r, trace_context in zip(prompts, responses, trace_contexts, strict=True):
                         try:
-                            handle.record_call({"model": model, "prompt": p, "response": r})
+                            handle.record_call(
+                                {
+                                    "model": model,
+                                    "prompt": p,
+                                    "response": r,
+                                    "trace_context": trace_context,
+                                }
+                            )
                         except Exception:
                             logger.exception("record_call failed")
                 return web.json_response(
@@ -190,14 +258,21 @@ class SubLLMProxy:
 
         sem = self._semaphores.get(rollout_id) or asyncio.Semaphore(handle.max_concurrent)
 
-        async def run_one(p: str) -> str:
+        async def run_one(p: str, trace_context: dict[str, Any]) -> str:
+            """Execute and record one member of a real-client batch."""
             async with sem:
                 try:
                     text, meta = await self._completion(handle, p, model)
                     if handle.record_call is not None:
                         try:
                             handle.record_call(
-                                {"model": model, "prompt": p, "response": text, **meta}
+                                {
+                                    "model": model,
+                                    "prompt": p,
+                                    "response": text,
+                                    "trace_context": trace_context,
+                                    **meta,
+                                }
                             )
                         except Exception:
                             logger.exception("record_call failed")
@@ -206,7 +281,12 @@ class SubLLMProxy:
                     logger.exception("sub-llm batched call failed")
                     return f"Error: {e}"
 
-        results = await asyncio.gather(*(run_one(p) for p in prompts))
+        results = await asyncio.gather(
+            *(
+                run_one(p, trace_context)
+                for p, trace_context in zip(prompts, trace_contexts, strict=True)
+            )
+        )
         return web.json_response({"responses": results})
 
     async def _completion(

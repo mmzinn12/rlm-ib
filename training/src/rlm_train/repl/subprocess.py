@@ -1,4 +1,18 @@
-"""Subprocess-based REPL backend: one `python -u worker.py` per rollout."""
+"""Run one persistent JSONL-speaking Python REPL subprocess per rollout.
+
+Purpose:
+    Isolate generated code from the trainer process while preserving variables between
+    RLM iterations.
+Implementation:
+    The backend starts ``python -u -m rlm_train.worker``, exchanges request/response
+    dictionaries over line-delimited JSON, enforces watchdogs, and normalizes results.
+Inputs:
+    Proxy/rollout configuration, context payloads, generated code, and trace metadata.
+Outputs:
+    Context indices and ``ExecResult`` objects, including dynamic trace call counts.
+Example:
+    ``result = await backend.execute("x = llm_query('q')", trace_context=trace)``
+"""
 
 from __future__ import annotations
 
@@ -12,14 +26,27 @@ from rlm_train.repl.base import ExecResult, ReplBackend
 
 
 class WorkerStartupError(RuntimeError):
-    pass
+    """Indicate that a worker failed before completing its initialization handshake."""
 
 
 class WorkerProtocolError(RuntimeError):
-    pass
+    """Indicate malformed, mismatched, timed-out, or failed worker communication."""
 
 
 class SubprocessReplBackend(ReplBackend):
+    """Manage one persistent worker process and its serialized request stream.
+
+    Args:
+        python: Python executable; defaults to the current interpreter.
+        worker_module: Module launched in unbuffered mode.
+        startup_timeout: Seconds allowed for the initialization handshake.
+        request_timeout: Seconds allowed for any worker request.
+
+    Raises:
+        WorkerStartupError: If the worker does not initialize correctly.
+        WorkerProtocolError: If subsequent JSONL communication fails.
+    """
+
     _STREAM_LIMIT = 16 * 1024 * 1024
 
     def __init__(
@@ -101,6 +128,15 @@ class SubprocessReplBackend(ReplBackend):
             self._stderr_task = None
 
     async def load_context(self, payload: Any, index: int | None = None) -> int:
+        """Load one context payload into the persistent worker.
+
+        Args:
+            payload: JSON-serializable value exposed as ``context_N``.
+            index: Optional explicit context index.
+
+        Returns:
+            Index assigned by the worker.
+        """
         result = await self._request({"type": "load_context", "payload": payload, "index": index})
         return int(result.get("index", 0))
 
@@ -109,14 +145,28 @@ class SubprocessReplBackend(ReplBackend):
             return
         await self._request({"type": "bootstrap", "code": code})
 
-    async def execute(self, code: str) -> ExecResult:
-        result = await self._request({"type": "exec", "code": code})
+    async def execute(self, code: str, trace_context: dict[str, Any] | None = None) -> ExecResult:
+        """Execute code and deserialize worker output into ``ExecResult``.
+
+        Args:
+            code: Generated Python source.
+            trace_context: Parent node, block index, and call-order offset propagated to
+                any subcalls made while this code executes.
+
+        Returns:
+            Captured output, final-answer state, locals, timing, and dynamic call count.
+
+        Raises:
+            WorkerProtocolError: If the worker is absent, times out, or returns an error.
+        """
+        result = await self._request({"type": "exec", "code": code, "trace_context": trace_context})
         return ExecResult(
             stdout=result.get("stdout", ""),
             stderr=result.get("stderr", ""),
             final_answer=result.get("final_answer"),
             execution_time=float(result.get("execution_time") or 0.0),
             locals_keys=list(result.get("locals_keys") or []),
+            trace_call_count=int(result.get("trace_call_count") or 0),
         )
 
     async def _request(self, payload: dict[str, Any]) -> dict[str, Any]:

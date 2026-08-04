@@ -9,19 +9,24 @@ from collections.abc import Callable
 from typing import Any
 
 import verifiers as vf
-from verifiers.types import Messages, State
-
-from rlm.utils.parsing import find_code_blocks
+from rlm.core.trajectory import InvocationKind
+from rlm.utils.parsing import find_code_blocks_with_spans
 from rlm.utils.prompts import (
     RLM_SYSTEM_PROMPT,
     QueryMetadata,
     build_rlm_system_prompt,
     build_user_prompt,
 )
+from verifiers.types import Messages, State
+
+from rlm_train.prompts import QUESTION_LIST_PROMPT_OVERLAY, compose_training_system_prompt
 from rlm_train.proxy import ClientHandle, SubLLMProxy
 from rlm_train.repl.base import ExecResult, ReplBackend
 from rlm_train.repl.subprocess import SubprocessReplBackend
 from rlm_train.rubric import RLMTrainRubric
+from rlm_train.trajectory.recorder import TrajectoryRecorder
+from rlm_train.trajectory.segmenter import RLMResponseSegmenter
+from rlm_train.trajectory.validation import summarize_question_trace
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,32 @@ _MAX_REPL_OUTPUT_CHARS = 20_000
 
 
 class RLMTrainEnv(vf.MultiTurnEnv):
+    """Run depth-1 RLM rollouts while recording tree-aware training traces.
+
+    The environment mirrors the normal RLM loop: a root policy emits REPL code, a
+    persistent worker executes it, and subcalls are routed through ``SubLLMProxy``.
+    Each root and subcall is also recorded with stable IDs and component spans.
+
+    Args:
+        backend_factory: Factory for one persistent REPL backend per rollout.
+        max_iterations: Maximum number of root-policy turns.
+        sub_model: Optional model override for subcalls.
+        sub_sampling_args: Sampling arguments passed to subcall completions.
+        custom_system_prompt: Optional replacement for the standard RLM system prompt.
+        question_prompt_overlay: Training-only guidance for explicit question lists;
+            pass ``None`` to disable it.
+        rubric: Verifiers rubric; defaults to ``RLMTrainRubric``.
+        sub_llm_fn: Optional single-call test/fake implementation.
+        sub_llm_fn_batched: Optional batched test/fake implementation.
+        user_prologue: Optional user message inserted before the first iteration.
+        bootstrap_code: Optional REPL setup code executed before the rollout.
+        orchestrator: Whether to generate the orchestrator-flavored RLM prompt.
+        **kwargs: Remaining ``MultiTurnEnv`` configuration.
+
+    Raises:
+        ValueError: If callers use ``max_turns`` instead of ``max_iterations``.
+    """
+
     def __init__(
         self,
         backend_factory: Callable[[], ReplBackend] | None = None,
@@ -36,6 +67,7 @@ class RLMTrainEnv(vf.MultiTurnEnv):
         sub_model: str | None = None,
         sub_sampling_args: dict[str, Any] | None = None,
         custom_system_prompt: str | None = None,
+        question_prompt_overlay: str | None = QUESTION_LIST_PROMPT_OVERLAY,
         rubric: vf.Rubric | None = None,
         sub_llm_fn: Callable[[str, Any], Any] | None = None,
         sub_llm_fn_batched: Callable[[list[str], Any], Any] | None = None,
@@ -55,12 +87,16 @@ class RLMTrainEnv(vf.MultiTurnEnv):
         self._max_iterations = max_iterations
         self._sub_model = sub_model
         self._sub_sampling_args = sub_sampling_args or {"max_tokens": 4096}
-        self._system_prompt = custom_system_prompt or RLM_SYSTEM_PROMPT
+        self._system_prompt = compose_training_system_prompt(
+            custom_system_prompt or RLM_SYSTEM_PROMPT,
+            question_list_overlay=question_prompt_overlay,
+        )
         self._orchestrator = orchestrator
         self._user_prologue = user_prologue
         self._sub_llm_fn = sub_llm_fn
         self._sub_llm_fn_batched = sub_llm_fn_batched
         self._bootstrap_code = bootstrap_code or ""
+        self._segmenter = RLMResponseSegmenter()
         self._proxy: SubLLMProxy | None = None
         self._proxy_lock: asyncio.Lock | None = None
 
@@ -98,6 +134,19 @@ class RLMTrainEnv(vf.MultiTurnEnv):
         )
 
     async def setup_state(self, state: State) -> None:
+        """Initialize rollout history, backend, proxy registration, and trace storage.
+
+        Args:
+            state: Mutable Verifiers state. ``state['info']['context']`` is required;
+                ``root_prompt`` is optional.
+
+        Returns:
+            ``None`` after populating prompt, runtime, counters, and trajectory fields.
+
+        Raises:
+            ValueError: If the dataset row does not provide a context payload.
+            WorkerStartupError: If the configured REPL backend cannot start.
+        """
         await super().setup_state(state)
 
         info = state.get("info") or {}
@@ -109,15 +158,74 @@ class RLMTrainEnv(vf.MultiTurnEnv):
         rollout_id = f"rlm_{uuid.uuid4().hex[:12]}"
         proxy = await self._ensure_proxy()
 
+        recorder = TrajectoryRecorder(rollout_id)
+        state["rlm_rollout_id"] = rollout_id
+        state["rlm_trajectory_recorder"] = recorder
+        state["rlm_trajectory_tree"] = recorder.snapshot()
+        state["rlm_last_root_node_id"] = None
+        state["rlm_pending_child_node_ids"] = []
+        state["rlm_untraced_subcalls"] = []
+        state["rlm_sub_llm_calls"] = 0
+
+        def record_subcall(meta: dict[str, Any]) -> None:
+            """Convert one completed proxy call into a child trajectory node.
+
+            Args:
+                meta: Proxy callback payload containing prompt, response, model, usage,
+                    and trace context propagated from the executing code block.
+
+            Returns:
+                ``None`` after updating counters and the latest trajectory snapshot.
+                Calls without a traced parent are retained in ``rlm_untraced_subcalls``.
+            """
+            state["rlm_sub_llm_calls"] = int(state.get("rlm_sub_llm_calls") or 0) + 1
+            trace_context = meta.get("trace_context") or {}
+            parent_node_id = trace_context.get("parent_node_id")
+            if parent_node_id is None:
+                state.setdefault("rlm_untraced_subcalls", []).append(meta)
+                return
+            call_order = int(trace_context.get("call_order") or 0)
+            response = str(meta.get("response") or "")
+            child_node_id = recorder.begin_node(
+                kind=InvocationKind.SUBCALL,
+                model=str(meta.get("model") or state["model"]),
+                context=meta.get("prompt"),
+                parent_id=parent_node_id,
+                depth=1,
+                call_order=call_order,
+                batch_index=trace_context.get("batch_index"),
+                policy_version=state.get("policy_version"),
+                metadata={
+                    "call_kind": trace_context.get("call_kind"),
+                    "code_block_index": trace_context.get("code_block_index"),
+                    "usage": meta.get("usage"),
+                },
+            )
+            recorder.complete_node(
+                child_node_id,
+                response=response,
+                spans=self._segmenter.segment_child_response(response),
+            )
+            recorder.bind_call_span(parent_node_id, call_order, child_node_id)
+            recorder.bind_call_item(
+                parent_node_id,
+                call_order,
+                trace_context.get("batch_index"),
+                child_node_id,
+            )
+            state.setdefault("rlm_pending_child_node_ids", []).append(child_node_id)
+            state["rlm_trajectory_tree"] = recorder.snapshot()
+            state["rlm_question_metrics"] = summarize_question_trace(
+                state["rlm_trajectory_tree"]
+            ).to_dict()
+
         proxy.register(
             rollout_id,
             ClientHandle(
                 client=state["client"],
                 model=self._sub_model or state["model"],
                 sampling_args=self._sub_sampling_args,
-                record_call=lambda meta: state.update(
-                    {"rlm_sub_llm_calls": int(state.get("rlm_sub_llm_calls") or 0) + 1}
-                ),
+                record_call=record_subcall,
                 fake_query=self._sub_llm_fn,
                 fake_query_batched=self._sub_llm_fn_batched,
                 state_ref=state,
@@ -139,17 +247,18 @@ class RLMTrainEnv(vf.MultiTurnEnv):
             orchestrator=self._orchestrator,
         )
 
-        state["rlm_rollout_id"] = rollout_id
         state["rlm_backend"] = backend
         state["rlm_root_prompt"] = root_prompt
         state["rlm_history"] = list(base)
         state["rlm_n_processed"] = 0
         state["rlm_iterations"] = 0
         state["rlm_repl_calls"] = 0
-        state["rlm_sub_llm_calls"] = 0
         state["rlm_final_answer"] = None
         state["rlm_context_count"] = 1
         state["rlm_final_repl_outputs"] = []
+        state["rlm_question_metrics"] = summarize_question_trace(
+            state["rlm_trajectory_tree"]
+        ).to_dict()
 
         if self._user_prologue:
             state["rlm_history"].append({"role": "user", "content": self._user_prologue})
@@ -161,11 +270,26 @@ class RLMTrainEnv(vf.MultiTurnEnv):
         state["prompt"] = list(state["rlm_history"])
 
     async def get_prompt_messages(self, state: State) -> Messages:
+        """Process newly sampled root turns and return the next model prompt.
+
+        For each unprocessed turn this method records the root node, segments its exact
+        response, executes every REPL block with parent/call-order metadata, records
+        dynamic child calls through the proxy callback, and appends REPL output to
+        history. Child nodes from one turn are marked as consumed by the next root turn.
+
+        Args:
+            state: Mutable Verifiers rollout state initialized by :meth:`setup_state`.
+
+        Returns:
+            Normalized message history for the next root turn, or the final history when
+            the reserved ``answer`` object surfaces a final answer.
+        """
         if not state["trajectory"]:
             return list(state["prompt"])
 
         history: list = state["rlm_history"]
         backend: ReplBackend = state["rlm_backend"]
+        recorder: TrajectoryRecorder = state["rlm_trajectory_recorder"]
         n_done = len(state["trajectory"])
         n_processed = int(state.get("rlm_n_processed") or 0)
 
@@ -174,11 +298,48 @@ class RLMTrainEnv(vf.MultiTurnEnv):
             assistant_msg = _last_assistant(step["completion"])
             assistant_text = _msg_text(assistant_msg)
 
+            consumed_node_ids = sorted(state.get("rlm_pending_child_node_ids") or [])
+            parent_node_id = state.get("rlm_last_root_node_id")
+            root_node_id = recorder.begin_node(
+                kind=InvocationKind.ROOT,
+                model=str(state["model"]),
+                context=list(history),
+                parent_id=parent_node_id,
+                depth=0,
+                policy_version=state.get("policy_version"),
+                metadata={"iteration": n_processed},
+            )
+            segmentation = self._segmenter.segment_root(
+                assistant_text, has_child_results=bool(consumed_node_ids)
+            )
+            recorder.complete_node(
+                root_node_id,
+                response=assistant_text,
+                spans=segmentation.spans,
+                call_item_spans=segmentation.call_item_spans,
+                consumed_node_ids=consumed_node_ids,
+            )
+            state["rlm_last_root_node_id"] = root_node_id
+            state["rlm_pending_child_node_ids"] = []
+            state["rlm_trajectory_tree"] = recorder.snapshot()
+            state["rlm_question_metrics"] = summarize_question_trace(
+                state["rlm_trajectory_tree"]
+            ).to_dict()
+
             outputs: list[dict[str, Any]] = []
             final_from_answer: str | None = None
-            for code in find_code_blocks(assistant_text):
+            call_order_offset = 0
+            for block_index, block in enumerate(find_code_blocks_with_spans(assistant_text)):
+                code = block.code
                 try:
-                    result = await backend.execute(code)
+                    result = await backend.execute(
+                        code,
+                        trace_context={
+                            "parent_node_id": root_node_id,
+                            "code_block_index": block_index,
+                            "call_order_offset": call_order_offset,
+                        },
+                    )
                 except Exception as e:  # noqa: BLE001
                     outputs.append(
                         {
@@ -190,6 +351,7 @@ class RLMTrainEnv(vf.MultiTurnEnv):
                         }
                     )
                     continue
+                call_order_offset += result.trace_call_count
                 outputs.append(_pack_exec(code, result))
                 state["rlm_repl_calls"] = int(state.get("rlm_repl_calls") or 0) + 1
                 if result.final_answer is not None and final_from_answer is None:

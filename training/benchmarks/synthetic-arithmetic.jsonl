@@ -1,0 +1,3 @@
+{"id":"add-001","prompt":"Compute 17 + 25. End with FINAL: <integer>.","target":"42","metadata":{"family":"addition"}}
+{"id":"mul-001","prompt":"Compute 9 * 8. End with FINAL: <integer>.","target":"72","metadata":{"family":"multiplication"}}
+{"id":"sub-001","prompt":"Compute 100 - 37. End with FINAL: <integer>.","target":"63","metadata":{"family":"subtraction"}}

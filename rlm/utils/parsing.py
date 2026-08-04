@@ -1,25 +1,90 @@
-"""
-Parsing utilities for RLM trjaectories.
-"""
+"""Parsing utilities for RLM trajectories."""
 
 import re
+from dataclasses import dataclass
 
 from rlm.core.types import REPLResult, RLMIteration
 
 
+@dataclass(frozen=True)
+class ParsedCodeBlock:
+    """Store stripped REPL code and its offsets in the original response.
+
+    Args:
+        code: Whitespace-trimmed code body.
+        start: Inclusive start of ``code`` in the response.
+        end: Exclusive end of ``code`` in the response.
+        fence_start: Inclusive start of the opening Markdown fence.
+        fence_end: Exclusive end of the closing Markdown fence.
+
+    Example:
+        ``block = find_code_blocks_with_spans(response)[0]``
+    """
+
+    code: str
+    start: int
+    end: int
+    fence_start: int
+    fence_end: int
+
+
+_REPL_BLOCK_PATTERN = re.compile(r"```repl\s*\n(?P<code>.*?)\n```", re.DOTALL)
+
+
+def find_code_blocks_with_spans(text: str) -> list[ParsedCodeBlock]:
+    """Extract fenced REPL code while preserving exact response coordinates.
+
+    Args:
+        text: Model response that may contain one or more ``repl`` Markdown fences.
+
+    Returns:
+        Parsed blocks in response order. Code and fence offsets are half-open and refer
+        to ``text``. Whitespace-only blocks have empty code and equal code offsets.
+
+    Example:
+        ``blocks = find_code_blocks_with_spans("```repl\\nx = 1\\n```")``
+    """
+    blocks: list[ParsedCodeBlock] = []
+    for match in _REPL_BLOCK_PATTERN.finditer(text):
+        raw_code = match.group("code")
+        if not raw_code.strip():
+            start = match.start("code")
+            blocks.append(
+                ParsedCodeBlock(
+                    code="",
+                    start=start,
+                    end=start,
+                    fence_start=match.start(),
+                    fence_end=match.end(),
+                )
+            )
+            continue
+        left_trimmed = len(raw_code) - len(raw_code.lstrip())
+        right_trimmed = len(raw_code) - len(raw_code.rstrip())
+        start = match.start("code") + left_trimmed
+        end = match.end("code") - right_trimmed
+        blocks.append(
+            ParsedCodeBlock(
+                code=text[start:end],
+                start=start,
+                end=end,
+                fence_start=match.start(),
+                fence_end=match.end(),
+            )
+        )
+    return blocks
+
+
 def find_code_blocks(text: str) -> list[str]:
-    """
-    Find REPL code blocks in text wrapped in triple backticks and return List of content(s).
-    Returns None if no code blocks are found.
-    """
-    pattern = r"```repl\s*\n(.*?)\n```"
-    results = []
+    """Return stripped code content from each fenced REPL block.
 
-    for match in re.finditer(pattern, text, re.DOTALL):
-        code_content = match.group(1).strip()
-        results.append(code_content)
+    Args:
+        text: Model response containing zero or more ``repl`` Markdown fences.
 
-    return results
+    Returns:
+        Code strings in response order, or an empty list when no block is present.
+    """
+    return [block.code for block in find_code_blocks_with_spans(text)]
 
 
 def format_iteration(
