@@ -117,6 +117,26 @@ class GenerationConfig(ImmutableConfig):
         return self
 
 
+class SDPORolloutConfig(ImmutableConfig):
+    """Configure the explicit helper-question edge sampled for SDPO training."""
+
+    question_system_prompt: str = (
+        "Given the problem, respond with exactly one useful helper question and nothing else."
+    )
+    child_system_prompt: str = (
+        "Answer the helper question carefully using only the problem and question provided."
+    )
+    max_question_tokens: int = Field(default=64, gt=0)
+    max_child_tokens: int = Field(default=128, gt=0)
+
+    @model_validator(mode="after")
+    def validate_prompts(self) -> SDPORolloutConfig:
+        """Require explicit non-blank policies for both nodes in the traced edge."""
+        if not self.question_system_prompt.strip() or not self.child_system_prompt.strip():
+            raise ValueError("SDPO question and child system prompts must not be blank")
+        return self
+
+
 class OptimizationConfig(ImmutableConfig):
     """Configure the local policy optimizer and explicit objective coefficients."""
 
@@ -254,6 +274,7 @@ class ColabRunConfig(ImmutableConfig):
             rollouts_per_prompt=2,
         )
     )
+    sdpo_rollout: SDPORolloutConfig = Field(default_factory=SDPORolloutConfig)
     optimization: OptimizationConfig = Field(
         default_factory=lambda: OptimizationConfig(max_optimizer_steps=1, sdpo_weight=1.0)
     )
@@ -274,10 +295,11 @@ class ColabRunConfig(ImmutableConfig):
         algorithm = experiment.training.algorithm
         if algorithm is TrainingAlgorithm.NONE:
             raise ValueError("the Colab trainer requires grpo or sdpo, not base evaluation")
-        if self.optimization.policy_weight <= 0.0:
-            raise ValueError("GRPO and SDPO runs require a positive policy_weight")
-        if algorithm is TrainingAlgorithm.GRPO and self.optimization.sdpo_weight != 0.0:
-            raise ValueError("GRPO cannot activate the SDPO loss")
+        if algorithm is TrainingAlgorithm.GRPO:
+            if self.optimization.policy_weight <= 0.0:
+                raise ValueError("GRPO runs require a positive policy_weight")
+            if self.optimization.sdpo_weight != 0.0:
+                raise ValueError("GRPO cannot activate the SDPO loss")
         if algorithm is TrainingAlgorithm.SDPO and self.optimization.sdpo_weight <= 0.0:
             raise ValueError("SDPO runs require a positive sdpo_weight")
         if self.optimization.gram_weight > 0.0 and not experiment.training.gram.is_active:
@@ -302,6 +324,16 @@ class ColabRunConfig(ImmutableConfig):
             self.model.max_context_length
         ):
             raise ValueError("prompt and continuation limits exceed model context length")
+        if (
+            algorithm is TrainingAlgorithm.SDPO
+            and self.generation.max_prompt_tokens
+            + max(
+                self.sdpo_rollout.max_question_tokens,
+                self.sdpo_rollout.max_child_tokens,
+            )
+            > self.model.max_context_length
+        ):
+            raise ValueError("SDPO prompt and node continuation limits exceed model context length")
         return self
 
     @property
@@ -362,6 +394,7 @@ __all__ = [
     "OutputConfig",
     "Precision",
     "Quantization",
+    "SDPORolloutConfig",
     "TeacherResidency",
     "TeacherRuntimeConfig",
 ]

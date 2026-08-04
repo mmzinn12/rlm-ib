@@ -1,4 +1,4 @@
-"""Prime-free single-process GRPO trainer with opt-in masked auxiliary objectives."""
+"""Prime-free single-process trainer for explicit GRPO and masked SDPO objectives."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from rlm_train.colab.config import (
 )
 from rlm_train.colab.generation import (
     TokenGenerationResult,
-    TransformersResponseGenerator,
     continuation_logprobs,
     derive_group_seed,
     score_continuation_logits,
@@ -45,6 +44,18 @@ class RewardRubric(Protocol):
     """Score one public response against verifier-owned problem data."""
 
     def score(self, problem: Problem, response: str, *, sample_index: int) -> float: ...
+
+
+class TokenizedResponseGenerator(Protocol):
+    """Generate exact policy tokens and optional validated trajectory provenance."""
+
+    def generate_tokenized(
+        self,
+        prompt: str | dict[str, Any],
+        *,
+        seed: int,
+        sample_index: int = 0,
+    ) -> TokenGenerationResult: ...
 
 
 class AuxiliaryLossBuilder(Protocol):
@@ -317,7 +328,7 @@ class SingleGPUTrainer:
         self,
         *,
         model: Any,
-        generator: TransformersResponseGenerator,
+        generator: TokenizedResponseGenerator,
         training_dataset: JSONLBenchmark,
         configuration: ColabRunConfig,
         rubric: RewardRubric | None = None,
@@ -430,14 +441,17 @@ class SingleGPUTrainer:
             if not math.isfinite(reward):
                 raise ValueError("rubric returned a non-finite reward")
             rewards.append(reward)
-            behavior.append(
-                continuation_logprobs(
-                    self.model,
-                    prompt_token_ids=result.prompt_token_ids,
-                    continuation_token_ids=result.continuation_token_ids,
-                    require_grad=False,
-                ).cpu()
-            )
+            if self.optimization.policy_weight > 0.0:
+                behavior.append(
+                    continuation_logprobs(
+                        self.model,
+                        prompt_token_ids=result.prompt_token_ids,
+                        continuation_token_ids=result.continuation_token_ids,
+                        require_grad=False,
+                    ).cpu()
+                )
+            else:
+                behavior.append(_torch().zeros(len(result.continuation_token_ids)))
         advantages = group_relative_advantages(rewards)
         samples: list[RolloutSample] = []
         for sample_index, (result, old_logprobs, reward, advantage) in enumerate(
@@ -499,7 +513,6 @@ class SingleGPUTrainer:
         if self.optimization.gram_weight > 0.0:
             assert self.gram_builder is not None
             batch = await self.gram_builder.prepare(batch)
-        current_logprobs: list[Any] = []
         continuation_logits: dict[str, Any] = {}
         with autocast_context(self.configuration.model.precision):
             for sample in batch.samples:
@@ -510,26 +523,33 @@ class SingleGPUTrainer:
                     require_grad=True,
                 )
                 continuation_logits[sample.trajectory_id] = logits
-                target_ids = torch.tensor(
-                    sample.continuation_token_ids,
-                    dtype=torch.long,
-                    device=logits.device,
+            policy = None
+            if self.optimization.policy_weight > 0.0:
+                current_logprobs = []
+                for sample in batch.samples:
+                    logits = continuation_logits[sample.trajectory_id]
+                    target_ids = torch.tensor(
+                        sample.continuation_token_ids,
+                        dtype=torch.long,
+                        device=logits.device,
+                    )
+                    current_logprobs.append(
+                        torch.log_softmax(logits.float(), dim=-1)
+                        .gather(-1, target_ids[:, None])
+                        .squeeze(-1)
+                    )
+                policy = grpo_policy_loss(
+                    current_logprobs=current_logprobs,
+                    behavior_logprobs=[sample.behavior_logprobs for sample in batch.samples],
+                    advantages=[sample.advantage for sample in batch.samples],
+                    masks=[sample.trainable_token_mask for sample in batch.samples],
+                    clip_epsilon=self.optimization.grpo_clip_epsilon,
+                    kl_coefficient=self.optimization.kl_coefficient,
                 )
-                current_logprobs.append(
-                    torch.log_softmax(logits.float(), dim=-1)
-                    .gather(-1, target_ids[:, None])
-                    .squeeze(-1)
-                )
-            policy = grpo_policy_loss(
-                current_logprobs=current_logprobs,
-                behavior_logprobs=[sample.behavior_logprobs for sample in batch.samples],
-                advantages=[sample.advantage for sample in batch.samples],
-                masks=[sample.trainable_token_mask for sample in batch.samples],
-                clip_epsilon=self.optimization.grpo_clip_epsilon,
-                kl_coefficient=self.optimization.kl_coefficient,
-            )
             result = self.composer.compose(
-                policy=lambda: (policy.loss, policy.active_token_count),
+                policy=(
+                    lambda: (policy.loss, policy.active_token_count) if policy is not None else None
+                ),
                 sdpo=(
                     lambda: self.sdpo_builder.loss(batch, continuation_logits)
                     if self.sdpo_builder is not None
@@ -585,14 +605,16 @@ class SingleGPUTrainer:
             sdpo_loss=float(result.raw["sdpo"].detach().float().cpu().item()),
             gram_loss=float(result.raw["gram"].detach().float().cpu().item()),
             total_loss=float(result.total.detach().float().cpu().item()),
-            approximate_kl=float(policy.approximate_kl.float().cpu().item()),
+            approximate_kl=(
+                float(policy.approximate_kl.float().cpu().item()) if policy is not None else 0.0
+            ),
             learning_rate=float(self.optimizer.param_groups[0]["lr"]),
             gradient_norm=gradient_norm,
             throughput_tokens_per_second=token_count / elapsed,
             max_gpu_memory_bytes=(
                 int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else 0
             ),
-            active_policy_tokens=policy.active_token_count,
+            active_policy_tokens=policy.active_token_count if policy is not None else 0,
         )
         return metrics
 
@@ -739,6 +761,7 @@ __all__ = [
     "SingleGPUTrainer",
     "SmokeIndexRubric",
     "StepMetrics",
+    "TokenizedResponseGenerator",
     "TrainerState",
     "build_gradient_scaler",
     "build_scheduler",

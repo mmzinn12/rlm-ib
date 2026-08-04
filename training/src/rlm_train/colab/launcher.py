@@ -1,4 +1,4 @@
-"""Launch the standalone single-GPU GRPO path used by Google Colab."""
+"""Launch standalone single-GPU GRPO or fixed-teacher SDPO in Google Colab."""
 
 from __future__ import annotations
 
@@ -16,9 +16,11 @@ from rlm_train.benchmarks import (
     ModelProvenance,
     default_benchmark_registry,
 )
+from rlm_train.colab.assembly import FixedSDPOComponents, build_fixed_sdpo_components
 from rlm_train.colab.checkpoint import TrainingCheckpointManager
 from rlm_train.colab.config import ColabRunConfig
 from rlm_train.colab.generation import TransformersResponseGenerator
+from rlm_train.colab.question_generation import TracedQuestionResponseGenerator
 from rlm_train.colab.runtime import (
     load_policy_bundle,
     validate_colab_runtime,
@@ -33,6 +35,8 @@ from rlm_train.colab.trainer import (
     trainable_parameter_fingerprint,
 )
 from rlm_train.experiment.config import TrainingAlgorithm
+from rlm_train.judge import PrivilegedJudgeContext
+from rlm_train.sdpo import TeacherStrategy
 
 
 async def run_colab_training(
@@ -47,15 +51,18 @@ async def run_colab_training(
         configuration,
         base_directory=Path.cwd(),
     )
-    if configuration.resolved_experiment.training.algorithm is not TrainingAlgorithm.GRPO:
-        raise RuntimeError(
-            "the command-line dataset adapter currently launches the policy-only GRPO arm; "
-            "use SingleGPUTrainer with MaskedQuestionSDPOLossBuilder for traced SDPO batches"
-        )
+    algorithm = configuration.resolved_experiment.training.algorithm
+    if algorithm not in {TrainingAlgorithm.GRPO, TrainingAlgorithm.SDPO}:
+        raise RuntimeError("the Colab launcher requires a GRPO or SDPO experiment")
+    if (
+        algorithm is TrainingAlgorithm.SDPO
+        and configuration.resolved_experiment.training.teacher.strategy is not TeacherStrategy.FIXED
+    ):
+        raise RuntimeError("the single-GPU SDPO launcher currently requires a fixed teacher")
     run_directory = Path(preflight.output_directory)
     run_directory.mkdir(parents=True, exist_ok=True)
     bundle = load_policy_bundle(configuration, preflight)
-    generator = TransformersResponseGenerator(
+    evaluation_generator = TransformersResponseGenerator(
         bundle.model,
         bundle.tokenizer,
         configuration.generation,
@@ -75,6 +82,24 @@ async def run_colab_training(
         base_directory=Path.cwd(),
         evaluation_benchmarks=evaluation_benchmarks,
     )
+    sdpo_components: FixedSDPOComponents | None = None
+    if algorithm is TrainingAlgorithm.SDPO:
+        sdpo_components = build_fixed_sdpo_components(
+            configuration,
+            student=bundle.model,
+            tokenizer=bundle.tokenizer,
+            tokenizer_fingerprint=bundle.tokenizer_fingerprint,
+            output_directory=run_directory,
+            privileged_contexts=privileged_judge_contexts(training_dataset),
+        )
+        training_generator = TracedQuestionResponseGenerator(
+            bundle.model,
+            bundle.tokenizer,
+            configuration,
+        )
+    else:
+        training_generator = evaluation_generator
+    component_identity = sdpo_component_identity(configuration, sdpo_components)
     run_provenance = {
         "configuration": configuration.resolved_dict(base_directory=Path.cwd()),
         "configuration_fingerprint": configuration.fingerprint(base_directory=Path.cwd()),
@@ -92,15 +117,17 @@ async def run_colab_training(
             for benchmark in evaluation_benchmarks
         },
         "overlap_check_results": overlap_results,
+        "sdpo": component_identity,
         "source_revision": source_revision(),
     }
     _initialize_run_provenance(run_directory / "run-provenance.json", run_provenance)
     trainer = SingleGPUTrainer(
         model=bundle.model,
-        generator=generator,
+        generator=training_generator,
         training_dataset=training_dataset,
         configuration=configuration,
         rubric=training_rubric(configuration, training_dataset),
+        sdpo_builder=(sdpo_components.loss_builder if sdpo_components is not None else None),
         metrics_journal=MetricsJournal(run_directory / "metrics.jsonl"),
     )
     checkpoint_manager = TrainingCheckpointManager(
@@ -123,14 +150,17 @@ async def run_colab_training(
             expected_tokenizer_fingerprint=bundle.tokenizer_fingerprint,
             expected_dataset_fingerprint=training_dataset.identity.source_fingerprint,
             expected_benchmark_fingerprints=benchmark_fingerprints,
+            expected_teacher_identity=component_identity.get("teacher_identity"),
+            expected_judge_identity=component_identity.get("judge_identity"),
         )
 
     async def checkpoint_and_evaluate(metrics: Any, active_trainer: SingleGPUTrainer) -> None:
+        print(json.dumps(metrics.to_dict(), sort_keys=True, allow_nan=False), flush=True)
         step = metrics.global_step
         if step % configuration.output.evaluate_every_steps == 0:
             await evaluate_development_benchmarks(
                 configuration,
-                generator,
+                evaluation_generator,
                 evaluation_benchmarks,
                 bundle.provenance,
                 run_directory,
@@ -147,6 +177,7 @@ async def run_colab_training(
                 overlap_check_results=overlap_results,
                 completed_evaluation_keys=completed,
                 source_revision=run_provenance["source_revision"],
+                **sdpo_checkpoint_metadata(configuration, sdpo_components),
             )
 
     reports = await trainer.run(on_optimizer_step=checkpoint_and_evaluate)
@@ -166,6 +197,7 @@ async def run_colab_training(
             overlap_check_results=overlap_results,
             completed_evaluation_keys=completed_evaluation_keys(run_directory),
             source_revision=run_provenance["source_revision"],
+            **sdpo_checkpoint_metadata(configuration, sdpo_components),
         )
     summary = {
         "global_step": trainer.state.global_step,
@@ -177,6 +209,59 @@ async def run_colab_training(
     }
     _atomic_json(run_directory / "summary.json", summary)
     return summary
+
+
+def privileged_judge_contexts(
+    training_dataset: JSONLBenchmark,
+) -> dict[str, PrivilegedJudgeContext]:
+    """Build an in-memory target channel that can cross only into the judge request."""
+    source_id = f"{training_dataset.identity.key}:verifier-target"
+    version = training_dataset.identity.source_fingerprint
+    return {
+        problem.problem_id: PrivilegedJudgeContext(
+            source_id,
+            version,
+            {"target": problem.target_data},
+            metadata={"problem_id": problem.problem_id},
+        )
+        for problem in training_dataset.problems()
+    }
+
+
+def sdpo_component_identity(
+    configuration: ColabRunConfig,
+    components: FixedSDPOComponents | None,
+) -> dict[str, Any]:
+    """Return payload-free immutable component identities for provenance and resume."""
+    if components is None:
+        return {}
+    return {
+        "trajectory_schema": "single-question-edge-v1",
+        "teacher_identity": components.teacher.identity,
+        "judge_identity": {
+            "provider": configuration.judge.provider,
+            "model": configuration.judge.model,
+            "model_revision": configuration.judge.model_revision,
+            "judge_version": components.judge.judge_version,
+            "rubric_version": components.judge.rubric_version,
+        },
+    }
+
+
+def sdpo_checkpoint_metadata(
+    configuration: ColabRunConfig,
+    components: FixedSDPOComponents | None,
+) -> dict[str, Any]:
+    """Snapshot SDPO identities and content-addressed cache manifests at save time."""
+    identity = sdpo_component_identity(configuration, components)
+    if components is None:
+        return {}
+    return {
+        "teacher_identity": identity["teacher_identity"],
+        "judge_identity": identity["judge_identity"],
+        "judge_cache_manifest": components.judge_cache.manifest(),
+        "teacher_cache_manifest": components.teacher_cache.manifest(),
+    }
 
 
 def training_rubric(

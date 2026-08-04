@@ -160,6 +160,8 @@ class TrainingCheckpointManager:
         expected_tokenizer_fingerprint: str,
         expected_dataset_fingerprint: str,
         expected_benchmark_fingerprints: Mapping[str, str] | None = None,
+        expected_teacher_identity: Mapping[str, Any] | None = None,
+        expected_judge_identity: Mapping[str, Any] | None = None,
     ) -> RestoredCheckpoint:
         """Validate immutable fields before mutating model, optimizer, or RNG state."""
         torch = _torch()
@@ -174,6 +176,12 @@ class TrainingCheckpointManager:
             "tokenizer_fingerprint": expected_tokenizer_fingerprint,
             "dataset_fingerprint": expected_dataset_fingerprint,
             "benchmark_fingerprints": dict(expected_benchmark_fingerprints or {}),
+            "teacher_identity": (
+                dict(expected_teacher_identity) if expected_teacher_identity is not None else None
+            ),
+            "judge_identity": (
+                dict(expected_judge_identity) if expected_judge_identity is not None else None
+            ),
         }
         actual = {
             "configuration_fingerprint": manifest.configuration_fingerprint,
@@ -182,6 +190,8 @@ class TrainingCheckpointManager:
             "tokenizer_fingerprint": manifest.tokenizer_fingerprint,
             "dataset_fingerprint": manifest.dataset_fingerprint,
             "benchmark_fingerprints": manifest.benchmark_fingerprints,
+            "teacher_identity": manifest.teacher_identity,
+            "judge_identity": manifest.judge_identity,
         }
         differences = field_differences(expected, actual)
         if differences:

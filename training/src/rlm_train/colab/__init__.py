@@ -1,6 +1,11 @@
 """Standalone, Prime-free single-GPU Hugging Face training path."""
 
 from rlm_train.colab.assembly import FixedSDPOComponents, build_fixed_sdpo_components
+from rlm_train.colab.benchmark_config import (
+    FINAL_ANSWER_PATTERN,
+    build_benchmark_sdpo_config,
+    write_colab_run_config,
+)
 from rlm_train.colab.checkpoint import TrainingCheckpointManager
 from rlm_train.colab.config import (
     ColabProfile,
@@ -13,6 +18,7 @@ from rlm_train.colab.config import (
     OutputConfig,
     Precision,
     Quantization,
+    SDPORolloutConfig,
     TeacherResidency,
     TeacherRuntimeConfig,
 )
@@ -24,6 +30,7 @@ from rlm_train.colab.generation import (
 )
 from rlm_train.colab.gram import TransformersGramLossBuilder
 from rlm_train.colab.objectives import ObjectiveComposer, RolloutSample, TrainingBatch
+from rlm_train.colab.question_generation import TracedQuestionResponseGenerator
 from rlm_train.colab.runtime import load_policy_bundle, validate_colab_runtime
 from rlm_train.colab.teacher import (
     FileTeacherTargetCache,
@@ -41,6 +48,7 @@ __all__ = [
     "ColabRunConfig",
     "DatasetConfig",
     "FileTeacherTargetCache",
+    "FINAL_ANSWER_PATTERN",
     "FixedSDPOComponents",
     "GenerationConfig",
     "JudgeConfig",
@@ -53,6 +61,7 @@ __all__ = [
     "PromptFormatter",
     "Quantization",
     "RolloutSample",
+    "SDPORolloutConfig",
     "SingleGPUTrainer",
     "TeacherResidency",
     "TeacherRuntimeConfig",
@@ -60,12 +69,15 @@ __all__ = [
     "TrainingBatch",
     "TrainingCheckpointManager",
     "TrajectoryQuestionTargetProvider",
+    "TracedQuestionResponseGenerator",
     "TransformersCompletionAdapter",
     "TransformersGramLossBuilder",
     "TransformersQuestionTeacherProvider",
     "TransformersResponseGenerator",
     "build_fixed_teacher_controller",
+    "build_benchmark_sdpo_config",
     "build_fixed_sdpo_components",
     "load_policy_bundle",
     "validate_colab_runtime",
+    "write_colab_run_config",
 ]

@@ -34,15 +34,33 @@ rlm-train-prepare-benchmarks all --output-root /path/to/rlm-ib-datasets
 operational run, `colab-train-shaped.toml` uses a clearly labeled verifier-local numeric
 proximity reward and loose last-integer extraction. Repeated problem occurrences receive
 fresh deterministic seeds in both profiles so a zero-reward group is not replayed forever.
+`colab-sdpo-smoke.toml` is a one-step pure-SDPO integration run: it sets
+`policy_weight = 0` and `sdpo_weight = 1` and records one explicit helper-question
+parent/child edge per rollout.
 
 Google Drive is optional. To use it, mount Drive in the notebook and set
 `output.google_drive_root` in a copied config. Credentials are read only from the named
 environment variable or Colab secret and are never serialized.
 
-The command-line dataset launcher intentionally selects the policy-only GRPO arm. The
-framework-local `SingleGPUTrainer` also accepts `MaskedQuestionSDPOLossBuilder` and
-`TransformersGramLossBuilder` for traced question batches; those APIs require exact token
-masks and therefore cannot silently turn question-local SDPO into whole-response
-distillation. `build_fixed_sdpo_components` constructs the configured fake/OpenAI judge,
+The command-line launcher selects GRPO or fixed-teacher SDPO from the experiment config.
+For SDPO it samples exactly one helper question, executes one child response, records the
+real parent/child edge, and applies the reverse-KL only to exact parent question tokens.
+Ordinary final-answer generation remains separate and is used for held-out evaluation.
+`build_fixed_sdpo_components` constructs the configured fake/OpenAI judge,
 content-addressed caches, feedback projector, frozen teacher, and masked loss builder from
-the top-level experiment config.
+the top-level experiment config. The deterministic fake judge is useful only for pipeline
+validation because its diagnostic is target-independent; use the API judge when feedback
+must assess the verifier-owned target.
+
+Notebook code can create isolated AIME24 and MATH-500 configs without editing TOML:
+
+```python
+from rlm_train.colab import build_benchmark_sdpo_config, write_colab_run_config
+
+aime_config = build_benchmark_sdpo_config(AIME24_SPLITS, run_name="aime24-sdpo")
+aime_path = write_colab_run_config(aime_config, "/content/aime24-sdpo.json")
+```
+
+Every optimizer step is printed immediately as JSON. For a healthy pure-SDPO run,
+`loss/sdpo` and `optimizer/gradient_norm` are positive while `loss/policy` and
+`tokens/active_policy` are zero.

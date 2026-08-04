@@ -10,8 +10,12 @@ from typing import Any
 import pytest
 from rlm.core.trajectory import CallItemSpan, InvocationKind, InvocationNode, TrajectoryTree
 
-from rlm_train.benchmarks import JSONLBenchmark
+from rlm_train.benchmarks import HubDatasetSource, JSONLBenchmark, PreparedDatasetSplits
 from rlm_train.colab.assembly import build_fixed_sdpo_components
+from rlm_train.colab.benchmark_config import (
+    build_benchmark_sdpo_config,
+    write_colab_run_config,
+)
 from rlm_train.colab.checkpoint import TrainingCheckpointManager
 from rlm_train.colab.config import (
     ColabProfile,
@@ -35,6 +39,7 @@ from rlm_train.colab.objectives import (
     RolloutSample,
     TrainingBatch,
 )
+from rlm_train.colab.question_generation import TracedQuestionResponseGenerator
 from rlm_train.colab.teacher import (
     FileTeacherTargetCache,
     TransformersQuestionTeacherProvider,
@@ -261,6 +266,38 @@ def test_exact_generation_is_seeded_and_completion_adapter_records_root_and_subc
     assert [node.kind.value for node in tree.nodes] == ["root", "subcall"]
     assert tree.nodes[1].parent_id == tree.nodes[0].node_id
     assert tree.nodes[0].metadata["continuation_token_ids"]
+
+
+def test_traced_question_generator_records_one_exact_parent_child_edge(tmp_path):
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(4)
+    config = make_config(tmp_path)
+    config = config.model_copy(
+        update={
+            "sdpo_rollout": config.sdpo_rollout.model_copy(
+                update={
+                    "question_system_prompt": "Ask one helper question.",
+                    "child_system_prompt": "Answer the helper question.",
+                    "max_question_tokens": 3,
+                    "max_child_tokens": 3,
+                }
+            )
+        }
+    )
+    model = ToyCausalLM()
+    generator = TracedQuestionResponseGenerator(model, ToyTokenizer(), config)
+
+    result = generator.generate_tokenized("Compute 2 + 3.", seed=12, sample_index=1)
+
+    assert result.trajectory is not None
+    result.trajectory.validate()
+    root, child = result.trajectory.nodes
+    assert root.kind is InvocationKind.ROOT
+    assert child.kind is InvocationKind.SUBCALL
+    assert child.parent_id == root.node_id
+    assert root.response == result.response
+    assert root.metadata["continuation_token_ids"] == list(result.continuation_token_ids)
+    assert root.call_item_spans == [CallItemSpan(0, None, 0, len(result.response), child.node_id)]
 
 
 def test_policy_smoke_step_changes_only_trainable_student_parameters(tmp_path):
@@ -721,3 +758,106 @@ def test_fixed_sdpo_assembly_is_selected_entirely_from_configuration(tmp_path):
     assert components.loss_builder.provider.compiler.feedback_mode.value == "diagnostic"
     assert components.judge_cache.manifest()["count"] == 0
     assert components.teacher_cache.manifest()["count"] == 0
+
+
+def test_pure_sdpo_step_uses_only_masked_question_loss(tmp_path):
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(31)
+    tokenizer = ToyTokenizer()
+    experiment = resolve_ablation_preset("edge_local_sdpo")
+    assert experiment.training.sdpo is not None
+    experiment = experiment.model_copy(
+        update={
+            "training": experiment.training.model_copy(
+                update={"sdpo": experiment.training.sdpo.model_copy(update={"top_k": 8})}
+            )
+        }
+    )
+    config = ColabRunConfig(
+        profile="train",
+        experiment_preset=None,
+        experiment=experiment,
+        model=ModelConfig(
+            model_id="toy",
+            model_revision="v1",
+            precision="fp32",
+            max_context_length=4096,
+            lora_target_modules=("lm_head",),
+        ),
+        generation=GenerationConfig(
+            use_chat_template=False,
+            max_prompt_tokens=2048,
+            max_new_tokens=3,
+            rollouts_per_prompt=1,
+        ),
+        optimization=OptimizationConfig(
+            max_optimizer_steps=1,
+            scheduler="constant",
+            learning_rate=0.05,
+            policy_weight=0.0,
+            sdpo_weight=1.0,
+        ),
+        dataset=DatasetConfig(path=str(tmp_path / "train.jsonl"), rubric="exact_match"),
+        output=OutputConfig(output_directory=str(tmp_path / "outputs"), run_name="pure-sdpo"),
+    )
+    dataset = make_dataset(tmp_path)
+    student = ToyCausalLM()
+    components = build_fixed_sdpo_components(
+        config,
+        student=student,
+        tokenizer=tokenizer,
+        tokenizer_fingerprint=provider_tokenizer_fingerprint(tokenizer),
+        output_directory=tmp_path / "pure-sdpo",
+    )
+    with torch.no_grad():
+        student.lm_head.weight.add_(0.05)
+    trainable_before = student.lm_head.weight.detach().clone()
+    trainer = SingleGPUTrainer(
+        model=student,
+        generator=TracedQuestionResponseGenerator(student, tokenizer, config),
+        training_dataset=dataset,
+        configuration=config,
+        sdpo_builder=components.loss_builder,
+    )
+
+    metrics = one_step(trainer)
+
+    assert metrics.policy_loss == 0.0
+    assert metrics.active_policy_tokens == 0
+    assert metrics.sdpo_loss > 0.0
+    assert metrics.total_loss == pytest.approx(metrics.sdpo_loss)
+    assert metrics.gradient_norm > 0.0
+    assert not torch.equal(student.lm_head.weight, trainable_before)
+    components.teacher.controller.validate_unchanged()
+
+
+def test_benchmark_sdpo_config_exposes_separate_train_and_eval_paths(tmp_path):
+    splits = PreparedDatasetSplits(
+        name="aime24",
+        source=HubDatasetSource("repo/aime", "revision-v1", "default", "train"),
+        train_path=tmp_path / "aime" / "train.jsonl",
+        test_path=tmp_path / "aime" / "test.jsonl",
+        manifest_path=tmp_path / "aime" / "manifest.json",
+        train_count=24,
+        test_count=6,
+        train_fingerprint="a" * 64,
+        test_fingerprint="b" * 64,
+    )
+
+    config = build_benchmark_sdpo_config(
+        splits,
+        run_name="aime24-sdpo",
+        max_optimizer_steps=3,
+        google_drive_root=None,
+        output_directory=str(tmp_path / "runs"),
+    )
+    config_path = write_colab_run_config(config, tmp_path / "aime24-sdpo.json")
+    restored = ColabRunConfig.from_file(config_path)
+
+    assert restored.optimization.policy_weight == 0.0
+    assert restored.optimization.sdpo_weight == 1.0
+    assert restored.dataset.path == str(splits.train_path)
+    benchmark = restored.resolved_experiment.evaluation.benchmarks[0]
+    assert benchmark.path == str(splits.test_path)
+    assert benchmark.split == "test"
+    assert restored.output.run_name == "aime24-sdpo"
