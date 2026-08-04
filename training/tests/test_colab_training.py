@@ -135,12 +135,11 @@ class ToyCausalLM:
 
             def generate(self, **kwargs: Any) -> Any:
                 input_ids = kwargs["input_ids"]
-                generator = kwargs.get("generator")
+                assert "generator" not in kwargs
                 tokens = torch.randint(
                     3,
                     16,
                     (input_ids.shape[0], 3),
-                    generator=generator,
                     device=input_ids.device,
                 )
                 return torch.cat((input_ids, tokens), dim=1)
@@ -233,10 +232,12 @@ def test_exact_generation_is_seeded_and_completion_adapter_records_root_and_subc
     model = ToyCausalLM()
     generator = make_generator(model, config)
 
+    rng_before = torch.random.get_rng_state().clone()
     first = generator.generate_tokenized("hello", seed=10)
     second = generator.generate_tokenized("hello", seed=10)
 
     assert first == second
+    assert torch.equal(torch.random.get_rng_state(), rng_before)
     assert first.prompt_length == len(first.prompt_token_ids)
     assert first.continuation_length == len(first.continuation_token_ids) == 3
     assert len(first.attention_mask) == first.prompt_length + first.continuation_length

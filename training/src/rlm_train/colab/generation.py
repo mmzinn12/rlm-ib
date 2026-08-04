@@ -157,9 +157,6 @@ class TransformersResponseGenerator:
         device = model_device(self.model)
         input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
         attention_mask = torch.ones_like(input_ids)
-        generator_device = device.type if hasattr(device, "type") else str(device)
-        random_generator = torch.Generator(device=generator_device)
-        random_generator.manual_seed(seed)
         generation_arguments: dict[str, Any] = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -173,15 +170,20 @@ class TransformersResponseGenerator:
                 {
                     "temperature": self.configuration.temperature,
                     "top_p": self.configuration.top_p,
-                    "generator": random_generator,
                 }
             )
         was_training = bool(self.model.training)
         self.model.eval()
-        with torch.inference_mode():
-            generated = self.model.generate(**generation_arguments)
-        if was_training:
-            self.model.train()
+        device_type = device.type if hasattr(device, "type") else str(device).split(":", 1)[0]
+        fork_devices = [device] if device_type == "cuda" else []
+        try:
+            with torch.random.fork_rng(devices=fork_devices):
+                torch.manual_seed(seed)
+                with torch.inference_mode():
+                    generated = self.model.generate(**generation_arguments)
+        finally:
+            if was_training:
+                self.model.train()
         if generated.ndim != 2 or generated.shape[0] != 1:
             raise ValueError("model.generate must return one token sequence")
         all_ids = tuple(int(value) for value in generated[0].detach().cpu().tolist())
