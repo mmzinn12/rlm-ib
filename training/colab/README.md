@@ -1,13 +1,34 @@
 # Single-GPU Colab launcher
 
 The notebook and launcher use only the local Transformers path. They do not install or
-download Prime-RL, AIME24, or a local judge model.
+download Prime-RL or a local judge model. Dataset preparation is an explicit notebook
+step; it is not performed by importing the training package or launching a run.
 
 In a fresh GPU runtime, clone the repository, open `rlm_training.ipynb`, and run the cells.
 The smoke profile performs two short rollouts and one optimizer step, then writes an atomic
 checkpoint. The train profile uses the same importable Python implementation with larger
 limits. Resume the latest checkpoint with `--resume`, or provide an explicit checkpoint
 directory after that flag.
+
+The optional dataset cells download pinned revisions of `HuggingFaceH4/aime_2024` and
+`HuggingFaceH4/MATH-500`, then create deterministic 24/6 and 400/100 train/test splits.
+These are project-local partitions of upstream benchmark pools, not official upstream
+train/test splits. Training on either pool changes what a score on its held-out partition
+means, so manifests retain the exact membership and source revision.
+They expose `AIME24_TRAIN_PATH`, `AIME24_TEST_PATH`, `MATH500_TRAIN_PATH`, and
+`MATH500_TEST_PATH`, plus count, fingerprint, manifest, repository, and revision variables.
+The JSONL files and their deterministic manifests are stored under
+`/content/drive/MyDrive/rlm-ib-datasets` by default, so they survive runtime deletion.
+Reruns byte-validate existing artifacts instead of silently replacing a changed snapshot.
+Preparation never rewrites the active run config; the existing smoke command remains
+synthetic until a copied config is pointed at the exposed paths.
+
+The same preparation is available outside the notebook:
+
+```bash
+pip install -e './training[hub-datasets]'
+rlm-train-prepare-benchmarks all --output-root /path/to/rlm-ib-datasets
+```
 
 `colab-train.toml` preserves the sparse exact-match GRPO baseline. For a tiny-model
 operational run, `colab-train-shaped.toml` uses a clearly labeled verifier-local numeric

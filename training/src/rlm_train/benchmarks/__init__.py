@@ -10,6 +10,20 @@ from rlm_train.benchmarks.evaluator import (
     aggregate_evaluation_records,
     derive_evaluation_seed,
 )
+from rlm_train.benchmarks.hub_splits import (
+    AIME24_SOURCE,
+    AIME24_SPLIT_SPEC,
+    MATH500_SOURCE,
+    MATH500_SPLIT_SPEC,
+    HubDatasetSource,
+    HubDatasetSplitSpec,
+    PreparedDatasetSplits,
+    deterministic_partition,
+    prepare_aime24_splits,
+    prepare_hub_dataset_splits,
+    prepare_math500_splits,
+    prepare_math_benchmark_splits,
+)
 from rlm_train.benchmarks.jsonl import JSONLBenchmark, find_prompt_overlaps
 from rlm_train.benchmarks.registry import BenchmarkRegistry, default_benchmark_registry
 from rlm_train.benchmarks.types import (
@@ -25,6 +39,8 @@ from rlm_train.benchmarks.types import (
 )
 
 __all__ = [
+    "AIME24_SOURCE",
+    "AIME24_SPLIT_SPEC",
     "Benchmark",
     "BenchmarkEvaluator",
     "BenchmarkIdentity",
@@ -36,14 +52,24 @@ __all__ = [
     "ExtractedAnswer",
     "ExtractionStatus",
     "GenerationResult",
+    "HubDatasetSource",
+    "HubDatasetSplitSpec",
     "JSONLBenchmark",
     "JSONLEvaluationStore",
+    "MATH500_SOURCE",
+    "MATH500_SPLIT_SPEC",
     "ModelProvenance",
+    "PreparedDatasetSplits",
     "Problem",
     "ResponseGenerator",
     "Score",
     "aggregate_evaluation_records",
     "default_benchmark_registry",
+    "deterministic_partition",
     "derive_evaluation_seed",
     "find_prompt_overlaps",
+    "prepare_aime24_splits",
+    "prepare_hub_dataset_splits",
+    "prepare_math500_splits",
+    "prepare_math_benchmark_splits",
 ]
