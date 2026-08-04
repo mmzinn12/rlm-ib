@@ -42,6 +42,7 @@ from rlm_train.colab.teacher import (
 )
 from rlm_train.colab.trainer import (
     MaskedQuestionSDPOLossBuilder,
+    NumericProximityRewardRubric,
     PreparedQuestionTarget,
     SingleGPUTrainer,
 )
@@ -286,6 +287,54 @@ def test_policy_smoke_step_changes_only_trainable_student_parameters(tmp_path):
     assert not torch.equal(model.lm_head.weight, trainable_before)
     torch.testing.assert_close(model.embedding.weight, frozen_before)
     assert model.embedding.weight.grad is None
+
+
+def test_numeric_proximity_reward_is_dense_and_target_private(tmp_path):
+    source = tmp_path / "numeric.jsonl"
+    source.write_text(
+        '{"id":"one","prompt":"Compute the answer.","target":"42"}\n',
+        encoding="utf-8",
+    )
+    dataset = JSONLBenchmark(
+        source,
+        name="numeric",
+        version="v1",
+        split="train",
+        answer_pattern=r"(?P<answer>-?\d+)",
+    )
+    problem = dataset.problems()[0]
+    rubric = NumericProximityRewardRubric(dataset)
+
+    assert rubric.score(problem, "FINAL: 42", sample_index=0) == 1.0
+    assert rubric.score(problem, "I estimate 41.", sample_index=1) == 0.5
+    assert 0.0 < rubric.score(problem, "The result may be 50.", sample_index=2) < 0.5
+    assert rubric.score(problem, "No numeric answer", sample_index=3) == 0.0
+    assert "42" not in dataset.format_prompt(problem)
+
+
+def test_repeated_problem_occurrences_use_fresh_deterministic_seeds(tmp_path):
+    config = make_config(tmp_path, max_steps=2)
+    dataset = make_dataset(tmp_path)
+    model = ToyCausalLM()
+    trainer = SingleGPUTrainer(
+        model=model,
+        generator=make_generator(model, config),
+        training_dataset=dataset,
+        configuration=config,
+        rubric=IndexRubric(),
+    )
+
+    async def collect() -> tuple[tuple[int, ...], tuple[int, ...]]:
+        first_problem = trainer.next_problem()
+        first = await trainer.generate_group(first_problem)
+        trainer.next_problem()
+        repeated_problem = trainer.next_problem()
+        repeated = await trainer.generate_group(repeated_problem)
+        return tuple(sample.seed for sample in first), tuple(sample.seed for sample in repeated)
+
+    first_seeds, repeated_seeds = asyncio.run(collect())
+
+    assert first_seeds != repeated_seeds
 
 
 def test_checkpoint_resume_matches_uninterrupted_next_update(tmp_path):

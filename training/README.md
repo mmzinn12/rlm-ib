@@ -114,6 +114,10 @@ pip install -e . -e './training[colab]'
 rlm-train-colab training/configs/colab-smoke.toml
 ```
 
+The exact-match `colab-train.toml` remains the sparse-reward baseline. Use
+`colab-train-shaped.toml` for a tiny-model arithmetic run with an explicit dense numeric
+proximity reward; this changes the training reward, not benchmark evaluation semantics.
+
 The generic command-line dataset launcher runs the GRPO baseline. Traced RLM callers use
 `build_fixed_sdpo_components` and `SingleGPUTrainer` with `TrajectoryQuestionTargetProvider`,
 `MaskedQuestionSDPOLossBuilder`, and optionally `TransformersGramLossBuilder`; SDPO

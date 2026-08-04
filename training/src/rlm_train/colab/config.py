@@ -156,7 +156,7 @@ class DatasetConfig(ImmutableConfig):
     split: str = "train"
     answer_pattern: str | None = r"FINAL:\s*(?P<answer>-?\d+)\s*$"
     case_sensitive: bool = True
-    rubric: Literal["exact_match", "smoke_index"] = "exact_match"
+    rubric: Literal["exact_match", "numeric_proximity", "smoke_index"] = "exact_match"
 
     @model_validator(mode="after")
     def validate_dataset(self) -> DatasetConfig:

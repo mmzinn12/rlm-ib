@@ -76,6 +76,27 @@ class BenchmarkRewardRubric:
         ).reward
 
 
+class NumericProximityRewardRubric:
+    """Provide a dense verifier-local reward for integer-answer training tasks."""
+
+    def __init__(self, benchmark: JSONLBenchmark) -> None:
+        self.benchmark = benchmark
+
+    def score(self, problem: Problem, response: str, *, sample_index: int) -> float:
+        """Reward exact integers most and decay smoothly with absolute error."""
+        del sample_index
+        answer = self.benchmark.extract_answer(response)
+        if answer.normalized_answer is None:
+            return 0.0
+        try:
+            candidate = int(answer.normalized_answer)
+            target = int(str(problem.target_data).strip())
+        except ValueError:
+            return 0.0
+        distance = min(abs(candidate - target), 1_000_000)
+        return 1.0 / (1.0 + distance)
+
+
 class SmokeIndexRubric:
     """Provide explicit deterministic variance solely for one-step runtime validation."""
 
@@ -390,11 +411,15 @@ class SingleGPUTrainer:
     async def generate_group(self, problem: Problem) -> tuple[RolloutSample, ...]:
         """Sample, score, and retain behavior log-probabilities for one prompt group."""
         prompt = self.training_dataset.format_prompt(problem)
+        problem_position = self.state.data_position - 1
+        if problem_position < 0:
+            raise RuntimeError("generate_group requires a problem selected by next_problem")
+        group_identity = f"{self.state.epoch}\0{problem_position}\0{problem.problem_id}"
         results: list[TokenGenerationResult] = []
         rewards: list[float] = []
         behavior: list[Any] = []
         for sample_index in range(self.configuration.generation.rollouts_per_prompt):
-            seed = derive_group_seed(self.configuration.seed, problem.problem_id, sample_index)
+            seed = derive_group_seed(self.configuration.seed, group_identity, sample_index)
             result = self.generator.generate_tokenized(
                 prompt,
                 seed=seed,
@@ -707,6 +732,7 @@ __all__ = [
     "BenchmarkRewardRubric",
     "MaskedQuestionSDPOLossBuilder",
     "MetricsJournal",
+    "NumericProximityRewardRubric",
     "PreparedQuestionTarget",
     "QuestionTargetProvider",
     "RewardRubric",

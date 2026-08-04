@@ -11,6 +11,7 @@ from typing import Any
 
 from rlm_train.benchmarks import (
     BenchmarkEvaluator,
+    JSONLBenchmark,
     JSONLEvaluationStore,
     ModelProvenance,
     default_benchmark_registry,
@@ -23,7 +24,9 @@ from rlm_train.colab.runtime import (
     validate_colab_runtime,
 )
 from rlm_train.colab.trainer import (
+    BenchmarkRewardRubric,
     MetricsJournal,
+    NumericProximityRewardRubric,
     SingleGPUTrainer,
     SmokeIndexRubric,
     load_training_dataset,
@@ -97,11 +100,7 @@ async def run_colab_training(
         generator=generator,
         training_dataset=training_dataset,
         configuration=configuration,
-        rubric=(
-            SmokeIndexRubric(configuration.generation.rollouts_per_prompt)
-            if configuration.dataset.rubric == "smoke_index"
-            else None
-        ),
+        rubric=training_rubric(configuration, training_dataset),
         metrics_journal=MetricsJournal(run_directory / "metrics.jsonl"),
     )
     checkpoint_manager = TrainingCheckpointManager(
@@ -178,6 +177,18 @@ async def run_colab_training(
     }
     _atomic_json(run_directory / "summary.json", summary)
     return summary
+
+
+def training_rubric(
+    configuration: ColabRunConfig,
+    training_dataset: JSONLBenchmark,
+) -> BenchmarkRewardRubric | NumericProximityRewardRubric | SmokeIndexRubric:
+    """Resolve the explicit training reward without changing benchmark evaluation."""
+    if configuration.dataset.rubric == "smoke_index":
+        return SmokeIndexRubric(configuration.generation.rollouts_per_prompt)
+    if configuration.dataset.rubric == "numeric_proximity":
+        return NumericProximityRewardRubric(training_dataset)
+    return BenchmarkRewardRubric(training_dataset)
 
 
 async def evaluate_development_benchmarks(
