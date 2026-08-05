@@ -138,6 +138,7 @@ class CanonicalTrainer:
         metric_sink: MetricSink | None = None,
         precision_context: Callable[[], AbstractContextManager[Any]] | None = None,
         gradient_scaler: Any | None = None,
+        verbose: bool = False,
     ) -> None:
         self.spec = spec
         self.dataset = dataset
@@ -157,6 +158,7 @@ class CanonicalTrainer:
         self.metric_sink = metric_sink
         self.precision_context = precision_context or nullcontext
         self.gradient_scaler = gradient_scaler
+        self.verbose = verbose
 
     def train(self) -> CanonicalTrainingResult:
         capabilities = self.objectives.capabilities
@@ -172,13 +174,30 @@ class CanonicalTrainer:
         final_loss = 0.0
         record_index = 0
 
+        self._verbose_print(
+            "starting training: "
+            f"records={len(records)} objectives={tuple(capabilities)} "
+            f"optimizer_steps={runtime.max_optimizer_steps} "
+            f"gradient_accumulation_steps={runtime.gradient_accumulation_steps}"
+        )
+
         for optimizer_step in range(1, runtime.max_optimizer_steps + 1):
+            self._verbose_print(
+                f"optimizer step {optimizer_step}/{runtime.max_optimizer_steps} started"
+            )
             self.optimizer.zero_grad(set_to_none=True)
             accumulated_loss = 0.0
-            for _ in range(runtime.gradient_accumulation_steps):
+            for accumulation_step in range(1, runtime.gradient_accumulation_steps + 1):
                 record = records[record_index % len(records)]
                 record_index += 1
+                self._verbose_print(
+                    f"  accumulation {accumulation_step}/{runtime.gradient_accumulation_steps} "
+                    f"record={record.record_id}"
+                )
                 rollouts = self._execute_rollouts(record, requirements.rollout_count)
+                self._verbose_print(
+                    f"  generated {len(rollouts)} rollout(s) for record={record.record_id}"
+                )
                 selection_batches = self._select_objective_tokens(rollouts, capabilities)
                 rollouts = self._attach_selections(rollouts, selection_batches)
                 reward_batch = self._prepare_rewards(record, rollouts, requirements)
@@ -194,8 +213,9 @@ class CanonicalTrainer:
                     )
                     composed = self.objectives.compute(batches)
                     scaled_loss = composed.loss / runtime.gradient_accumulation_steps
-                self._backward(scaled_loss)
                 loss_value = _finite_scalar(composed.loss, "composed loss")
+                self._verbose_print(f"  computed loss={loss_value:.6f}")
+                self._backward(scaled_loss)
                 accumulated_loss += loss_value / runtime.gradient_accumulation_steps
                 artifact_paths.extend(
                     self._write_rollouts(
@@ -219,12 +239,24 @@ class CanonicalTrainer:
                 run_spec_fingerprint=self.spec.fingerprint,
             )
             self._record_metrics(optimizer_step, final_loss, gradient_norm)
+            self._verbose_print(
+                f"optimizer step {optimizer_step}/{runtime.max_optimizer_steps} complete: "
+                f"loss={final_loss:.6f} gradient_norm={gradient_norm:.6f} "
+                f"examples_seen={record_index} artifacts={len(artifact_paths)}"
+            )
 
-        return CanonicalTrainingResult(
+        result = CanonicalTrainingResult(
             state=state,
             final_loss=final_loss,
             rollout_artifacts=tuple(artifact_paths),
         )
+        self._verbose_print(
+            f"training complete: final_loss={result.final_loss:.6f} "
+            f"optimizer_step={result.state.optimizer_step} "
+            f"examples_seen={result.state.examples_seen} "
+            f"artifacts={len(result.rollout_artifacts)}"
+        )
+        return result
 
     def _validate_requirements(self, requirements: BatchRequirements) -> None:
         if requirements.rewards and self.rewards is None:
@@ -447,6 +479,10 @@ class CanonicalTrainer:
                 self.metric_recorder.record(observation)
             if self.metric_sink is not None:
                 self.metric_sink.write(observation)
+
+    def _verbose_print(self, message: str) -> None:
+        if self.verbose:
+            print(f"[train] {message}", flush=True)
 
 
 def _feedback_record(bundle: FeedbackBundle) -> FeedbackRecord:

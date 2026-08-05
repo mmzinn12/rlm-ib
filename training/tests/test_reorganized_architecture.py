@@ -283,7 +283,10 @@ def test_non_privileged_view_is_invariant_to_final_result_replacement():
     assert first.fingerprint == second.fingerprint
 
 
-def test_canonical_trainer_performs_real_capability_driven_optimizer_step(tmp_path):
+def test_canonical_trainer_performs_real_capability_driven_optimizer_step(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+):
     torch = pytest.importorskip("torch")
     parameter = torch.nn.Parameter(torch.tensor(1.0))
     rollout = representative_rollout().model_copy(update={"rollout_id": "train-rollout"})
@@ -334,9 +337,11 @@ def test_canonical_trainer_performs_real_capability_driven_optimizer_step(tmp_pa
         policy_parameters=(parameter,),
         artifact_writer=RolloutJSONWriter(tmp_path / "rollouts"),
         metric_recorder=metrics,
+        verbose=True,
     )
 
     result = trainer.train()
+    output = capsys.readouterr().out
 
     assert result.state.optimizer_step == 1
     assert parameter.item() < 1.0
@@ -345,6 +350,10 @@ def test_canonical_trainer_performs_real_capability_driven_optimizer_step(tmp_pa
         "train/loss/total",
         "train/optimizer/gradient_norm",
     }
+    assert "[train] starting training:" in output
+    assert "[train] optimizer step 1/1 started" in output
+    assert "[train] optimizer step 1/1 complete:" in output
+    assert "[train] training complete:" in output
     saved = AnnotatedRollout.model_validate_json(
         (tmp_path / "rollouts" / "train-rollout.json").read_text()
     )

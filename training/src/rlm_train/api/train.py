@@ -14,12 +14,15 @@ def train(
     *,
     factory: ComponentFactory | None = None,
     components: ResolvedComponents | None = None,
+    verbose: bool = False,
 ) -> Any:
     spec = run if isinstance(run, RunSpec) else RunSpec.from_file(run)
     resolver = factory or ComponentFactory()
     resolved = resolver.resolve(spec, overrides=components)
     if resolved.trainer is None:
         raise ValueError("runtime factory did not resolve a trainer")
+    if hasattr(resolved.trainer, "verbose"):
+        resolved.trainer.verbose = verbose
     provenance = resolver.provenance(spec, resolved)
     output = Path(spec.artifacts.output_directory)
     provenance.write(output / "run-provenance.json")
