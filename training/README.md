@@ -1,131 +1,135 @@
-# Training local REPL RLM with `prime-rl`
+# Full-RLM training
 
-Verifiers-compatible training harness for `rlm.RLM` at depth=1. Designed to plug directly into [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) for end-to-end RL training of RLM policies. Does not require or use sandboxes.
+`rlm_train` trains and evaluates the complete recursive policy through the repository's
+canonical `rlm.RLM` engine. Root generations, Python/REPL execution, plain helper calls,
+recursive child RLMs, state, hierarchy, and final-answer submission all follow the same
+runtime path used by inference.
 
-This harness runs rollouts through a local REPL backend (subprocess-isolated, no cloud sandboxes), so it shells out to the same `LocalREPL`-style execution surface described in the [main README](../README.md#local-environments). It corresponds to the `local` environment in `rlm` — sub-LM calls are routed back through a proxy to the trainer's inference server, while Python code execution happens in a subprocess on the training host.
+Colab is a thin gateway over this package. It does not own a rollout algorithm, trainer,
+objective, trajectory schema, or checkpoint format.
 
-- `src/rlm_train/` — env, rubric, sub-LM proxy, subprocess REPL worker.
-- `environments/oolong/` — OOLONG synth long-context QA env (example).
-- `configs/rlm-qwen3-30b-example.toml` — example RL config.
+## Architecture
 
-## Launching a training run
+The dependency direction is strict:
 
-With `prime-rl` installed and this directory's environment set up, launch with:
-
-```bash
-uv run rl @ training/configs/rlm-qwen3-30b-example.toml
+```text
+CLI / gateways
+    -> public API
+    -> runtime factory
+    -> training or evaluation engine
+       -> rollout adapter -> rlm core
+       -> judge -> feedback
+       -> teachers
+       -> objectives
+       -> metrics and artifacts
 ```
 
-The config wires the `oolong` environment into `prime-rl`'s orchestrator/trainer/inference loop. See [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) for distributed launch options and deployment details.
+The base `rlm` package has no PyTorch or `rlm_train` dependency. It exposes immutable
+execution events and a neutral observer protocol in `rlm/core/events.py` and
+`rlm/core/observers.py`. The observer is shared by recursive children, so a rollout has
+one ordered event stream and one policy-owner identity across the complete invocation
+tree.
 
-## Tree-SDPO core
+The main training packages are:
 
-The repository includes modular, opt-in framework-neutral execution for trajectory-aware
-SDPO. It does not change the current Prime reward objective or select/launch a model yet.
+- `api/`: stable `train()` and `evaluate()` entry points.
+- `spec/`: immutable, serializable `RunSpec` configuration.
+- `models/`: exact sampled-ID generation and rescoring contracts.
+- `rollouts/`: canonical RLM adapter, event recorder, structural semantics, and
+  per-objective token selectors.
+- `trajectory/`: durable annotated rollout schema, validation, projection, and replay.
+- `feedback/` and `judge/`: minimal typed evidence views, visibility enforcement,
+  scoped assessments, and one-way overall aggregation.
+- `teachers/`: current-policy, fixed, and EMA strategies with exact-ID targets.
+- `objectives/`: independent GRPO, SDPO, and Gram packages plus the sole composer.
+- `datasets/` and `evaluation/`: public/private task separation and whole-policy scoring.
+- `engine/`, `runtime/`, `metrics/`, and `artifacts/`: optimization, construction,
+  observations, provenance, and safe rollout JSON.
+- `gateways/colab/`: CUDA/authentication/storage preflight followed by public API calls.
 
-- `src/rlm_train/trajectory/` records depth-1 root/subcall trees, segments response
-  spans, binds literal question-list items to runtime children, and compiles node-level
-  or edge-isolated question examples. Versioned JSONL artifacts and offline replay make
-  completed rollouts reusable without invoking the student again.
-- `src/rlm_train/judge/` defines strict structured feedback schemas, judge prompts,
-  a bounded-retry structured judge, persistent SQLite caching, and a privileged-context
-  boundary. Subcalls are scored for the significance of information they reveal
-  (novelty, uncertainty reduction, and evidence quality), never for how much they
-  contributed to the final answer. `information_significance` is the signed
-  reward/penalty placeholder; its calibration and weighting are intentionally deferred.
-- `src/rlm_train/sdpo/` defines fixed and EMA teacher lifecycles, edge-isolated question
-  scoring, teacher top-k/student-tail extraction,
-  target caching, exclusive masks, normalized weighted reverse-KL losses, metrics, and
-  dependency-free payloads for the Prime integration boundary.
-- `src/rlm_train/regularization/` is an independent Gram-anchor objective: detached JS
-  drift scoring, deterministic bounded token sampling, selected-layer Gram losses,
-  anchor lifecycle contracts, diagnostics, and a thin Prime seam.
-- `src/rlm_train/experiment/` composes those pieces into one immutable resolved config,
-  validates incompatible combinations, resolves the seven initial ablation presets, and
-  persists complete run/checkpoint provenance.
-- `src/rlm_train/diagnostics/` records epistemic markers, reconsideration behavior,
-  trajectory topology, teacher divergence, truncation, and Gram observations without
-  exposing any value to prompts, rewards, sampling, or losses.
-- `src/rlm_train/benchmarks/` supplies the generic benchmark protocol, a content-addressed
-  JSONL adapter, registry, overlap checks, deterministic sampling, durable resume records,
-  and `acc@k`/`pass@k` reports.
+The former Colab-owned trainer, depth-one rollout path, experiment layer, and duplicate
+objective, judge, benchmark, and trajectory implementations have been removed. Each
+training concern now has one implementation under the cohesive packages above.
 
-The proposed/default configuration uses reverse KL, teacher top-k with an explicit tail
-bucket, a fixed copy of the initial policy, diagnostic edge-local feedback, the same
-tokenizer for teacher and student, exclusive component masks,
-and maximum recursion depth 1. Privileged judge context is optional and unset by
-default; when supplied, only its source/version/fingerprint descriptor is persisted.
-Additive masks remain a later extension.
+## RunSpec
 
-Detailed package guides:
+A run is declared in TOML or JSON and resolved into concrete protocol implementations by
+the runtime factory. Direct component injection is supported for tests and research.
 
-- [`trajectory`](src/rlm_train/trajectory/README.md): runtime trace construction, stable
-  tree organization, segmentation, and compilation.
-- [`judge`](src/rlm_train/judge/README.md): node-addressable feedback, information-value
-  semantics, schemas, prompts, and caching.
-- [`sdpo`](src/rlm_train/sdpo/README.md): configuration, masks, fixed/EMA teacher contracts,
-  top-k-plus-tail targets, reverse KL, and the Prime integration boundary.
-- [`regularization`](src/rlm_train/regularization/README.md): Gram configuration,
-  reference alignment, sampling, representation loss, anchor lifecycle, and metrics.
+```toml
+[student]
+adapter = "transformers"
+model_id = "HuggingFaceTB/SmolLM2-135M-Instruct"
+trainable = true
 
-Install tensor regularization only when needed:
+[rollout]
+engine = "rlm"
+environment = "local"
+max_depth = 2
+max_iterations = 20
 
-```bash
-uv sync --extra dev --extra regularization
+[teacher]
+strategy = "current_policy"
+feedback_conditioning = true
+
+[objectives.sdpo]
+enabled = true
+weight = 1.0
+token_scope = "helper_questions"
+feedback_scope = "retrospective_local"
+divergence = "forward_kl"
+target_support = "top_k_with_tail"
+
+[training_dataset]
+adapter = "jsonl"
+source = "training/benchmarks/synthetic-arithmetic.jsonl"
+split = "train"
+
+[evaluation]
+recursive_policy = true
+benchmarks = ["synthetic-arithmetic"]
+
+[artifacts]
+rollout_json = "all"
+metrics_jsonl = true
 ```
 
-Compile stored trajectory artifacts without another student rollout:
+Every enabled objective selects its own token scope: `natural_language`,
+`helper_questions`, `subcall_natural_language`, or `all_student_tokens`. Selections are
+stored as explainable ranges and reconstructed as runtime masks. Only tokens owned by the
+configured student can be active.
 
-```bash
-uv run rlm-train-replay path/to/rollouts.jsonl
+## Entry points
+
+```python
+from rlm_train import RunSpec, evaluate, train
+
+spec = RunSpec.from_file("training/configs/full-rlm-example.toml")
+train(spec, components=injected_components)
+evaluate(spec, components=injected_components)
 ```
 
-## Download-free OOD experiment dry run
+The corresponding CLIs are `rlm-train` and `rlm-evaluate`. A concrete deployment either
+registers component builders on `ComponentFactory` or injects resolved components. The
+fully resolved specification and component identities are written before the first
+rollout.
 
-`configs/ood-robust-synthetic.toml` is a fully resolved local experiment using
-`benchmarks/synthetic-arithmetic.jsonl`. It exercises configuration, diagnostic,
-benchmark, resume, and reporting boundaries without downloading a model or dataset.
+## Environment examples
 
-The AIME24 adapter/data and the concrete version-pinned Prime trainer bridge are
-intentionally deferred. `prime-rl` is not a dependency of these framework-neutral
-packages, and no lockbox evaluation is performed by the dry run.
+`environments/oolong/` preserves the original OOLONG synthetic long-context dataset,
+prompt construction, and answer-scoring implementation. Its loader still targets the
+former Verifiers compatibility layer and is retained as an explicit migration example;
+see its README for the canonical dataset and scorer protocols it needs before use.
 
-Run the complete synthetic path with:
+## Tests
 
-```bash
-uv run rlm-train-ood-dry-run \
-  training/configs/ood-robust-synthetic.toml \
-  --output training/outputs/ood-robust-synthetic-dry-run
-```
-
-## Standalone single-GPU / Colab path
-
-`src/rlm_train/colab/` is an importable, Prime-free Transformers training path. It
-provides pinned runtime preflight, exact-token generation, LoRA loading, grouped GRPO,
-question-masked SDPO composition, an API-backed strict judge plus deterministic fake,
-fixed-teacher target caching, optional Gram anchoring, observer-compatible real-model
-evaluation, and atomic full-state checkpoints.
-
-The checked-in smoke profile uses a pinned SmolLM2 revision, two short rollouts, and one
-optimizer step:
+From the repository root:
 
 ```bash
-pip install -e . -e './training[colab]'
-rlm-train-colab training/configs/colab-smoke.toml
+uv run pytest
+cd training && uv run pytest
 ```
 
-The exact-match `colab-train.toml` remains the sparse-reward baseline. Use
-`colab-train-shaped.toml` for a tiny-model arithmetic run with an explicit dense numeric
-proximity reward; this changes the training reward, not benchmark evaluation semantics.
-
-The generic command-line dataset launcher runs the GRPO baseline. Traced RLM callers use
-`build_fixed_sdpo_components` and `SingleGPUTrainer` with `TrajectoryQuestionTargetProvider`,
-`MaskedQuestionSDPOLossBuilder`, and optionally `TransformersGramLossBuilder`; SDPO
-requires a recorded trajectory and an exact question-token mask and will fail rather
-than fall back to whole-response distillation.
-
-See [`colab/README.md`](colab/README.md) and
-[`colab/rlm_training.ipynb`](colab/rlm_training.ipynb) for the fresh-runtime entry point.
-
-## Examples
-* [Qwen3-30B-A3B-Instruct-0527] on the original suite of tasks: [https://huggingface.co/mit-oasys/rlm-qwen3-30b-a3b-v0.1](https://huggingface.co/mit-oasys/rlm-qwen3-30b-a3b-v0.1)
+The training suite includes a deterministic full-RLM integration rollout containing a
+root generation, code execution, a plain helper response, a recursive child with its own
+REPL state, and root final-answer aggregation.

@@ -162,6 +162,7 @@ class LocalREPL(NonIsolatedEnv):
         custom_sub_tools: dict[str, Any] | None = None,
         compaction: bool = False,
         max_concurrent_subcalls: int = 4,
+        event_callback: Callable[[str, dict[str, Any]], str | None] | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -179,6 +180,7 @@ class LocalREPL(NonIsolatedEnv):
         self._context_count: int = 0
         self._history_count: int = 0
         self.compaction = compaction
+        self.event_callback = event_callback
 
         # Custom tools: functions available in the REPL
         self.custom_tools = custom_tools or {}
@@ -267,6 +269,7 @@ class LocalREPL(NonIsolatedEnv):
         if not self.lm_handler_address:
             return "Error: No LM handler configured"
 
+        subcall_id = self._notify_helper_question(prompt, model, "plain")
         try:
             request = LMRequest(prompt=prompt, model=model, depth=self.depth)
             response = send_lm_request(self.lm_handler_address, request)
@@ -275,6 +278,7 @@ class LocalREPL(NonIsolatedEnv):
                 return f"Error: {response.error}"
 
             self._pending_llm_calls.append(response.chat_completion)
+            self._notify_plain_completed(subcall_id, response.chat_completion)
             return response.chat_completion.response
         except Exception as e:
             return f"Error: LM query failed - {e}"
@@ -293,17 +297,22 @@ class LocalREPL(NonIsolatedEnv):
         """
         if not self.lm_handler_address:
             return ["Error: No LM handler configured"] * len(prompts)
+        subcall_ids = [
+            self._notify_helper_question(prompt, model, "plain", batch_index=index)
+            for index, prompt in enumerate(prompts)
+        ]
         try:
             responses = send_lm_request_batched(
                 self.lm_handler_address, prompts, model=model, depth=self.depth
             )
 
             results = []
-            for response in responses:
+            for subcall_id, response in zip(subcall_ids, responses, strict=True):
                 if not response.success:
                     results.append(f"Error: {response.error}")
                 else:
                     self._pending_llm_calls.append(response.chat_completion)
+                    self._notify_plain_completed(subcall_id, response.chat_completion)
                     results.append(response.chat_completion.response)
 
             return results
@@ -322,8 +331,9 @@ class LocalREPL(NonIsolatedEnv):
             model: Optional model name override for the child.
         """
         if self.subcall_fn is not None:
+            subcall_id = self._notify_helper_question(prompt, model, "recursive")
             try:
-                completion = self.subcall_fn(prompt, model)
+                completion = self._invoke_subcall(prompt, model, subcall_id)
                 self._pending_llm_calls.append(completion)
                 return completion.response
             except Exception as e:
@@ -354,8 +364,9 @@ class LocalREPL(NonIsolatedEnv):
             if len(prompts) <= 1:
                 results = []
                 for prompt in prompts:
+                    subcall_id = self._notify_helper_question(prompt, model, "recursive")
                     try:
-                        completion = self.subcall_fn(prompt, model)
+                        completion = self._invoke_subcall(prompt, model, subcall_id)
                         self._pending_llm_calls.append(completion)
                         results.append(completion.response)
                     except Exception as e:
@@ -370,8 +381,11 @@ class LocalREPL(NonIsolatedEnv):
             lock = threading.Lock()
 
             def _run_subcall(index: int, prompt: str) -> None:
+                subcall_id = self._notify_helper_question(
+                    prompt, model, "recursive", batch_index=index
+                )
                 try:
-                    completion = self.subcall_fn(prompt, model)
+                    completion = self._invoke_subcall(prompt, model, subcall_id)
                     with lock:
                         completions.append((index, completion))
                     results[index] = completion.response
@@ -395,6 +409,43 @@ class LocalREPL(NonIsolatedEnv):
 
         # Fall back to plain batched LM call if no recursive capability
         return self._llm_query_batched(prompts, model)
+
+    def _notify_helper_question(
+        self,
+        prompt: str,
+        model: str | None,
+        subcall_kind: str,
+        *,
+        batch_index: int | None = None,
+    ) -> str | None:
+        if self.event_callback is None:
+            return None
+        return self.event_callback(
+            "helper_question",
+            {
+                "question": prompt,
+                "model": model,
+                "subcall_kind": subcall_kind,
+                "batch_index": batch_index,
+            },
+        )
+
+    def _notify_plain_completed(
+        self, subcall_id: str | None, completion: RLMChatCompletion
+    ) -> None:
+        if self.event_callback is not None and subcall_id is not None:
+            self.event_callback(
+                "plain_subcall_completed",
+                {"subcall_id": subcall_id, "completion": completion},
+            )
+
+    def _invoke_subcall(
+        self, prompt: str, model: str | None, subcall_id: str | None
+    ) -> RLMChatCompletion:
+        assert self.subcall_fn is not None
+        if subcall_id is None:
+            return self.subcall_fn(prompt, model)
+        return self.subcall_fn(prompt, model, subcall_id)
 
     def load_context(self, context_payload: dict | list | str):
         """Load context into the environment as context_0 (and 'context' alias)."""

@@ -19,19 +19,19 @@ import math
 import pytest
 from scipy.spatial.distance import jensenshannon
 
-from rlm_train.regularization.anchor import (
+from rlm_train.objectives.gram.anchors import (
     AlignedSequenceInputs,
     PeriodicEMASnapshotAnchorController,
 )
-from rlm_train.regularization.config import GramLayerSelectionConfig, JSTokenSamplingConfig
-from rlm_train.regularization.divergence import (
+from rlm_train.objectives.gram.config import GramLayerSelectionConfig, JSTokenSamplingConfig
+from rlm_train.objectives.gram.diagnostics import summarize_js
+from rlm_train.objectives.gram.divergence import (
     coarsen_logits_to_reference_topk,
     per_token_js_divergence,
 )
-from rlm_train.regularization.gram import gram_matrix_loss, multi_layer_gram_loss
-from rlm_train.regularization.metrics import summarize_js
-from rlm_train.regularization.sampling import sample_token_positions
-from rlm_train.regularization.selectors import (
+from rlm_train.objectives.gram.math import gram_matrix_loss, multi_layer_gram_loss
+from rlm_train.objectives.gram.sampling import sample_token_positions
+from rlm_train.objectives.gram.selection import (
     build_completion_mask,
     build_valid_token_mask,
     resolve_layer_selection,

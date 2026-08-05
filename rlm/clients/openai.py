@@ -19,10 +19,10 @@ DEFAULT_PRIME_INTELLECT_BASE_URL = "https://api.pinference.ai/api/v1/"
 
 
 def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
-    """Match the rename done by verifiers' OpenAIChatCompletionsClient so the
-    same sampling_args dict produces byte-equivalent chat.completions.create
-    calls in both harnesses. Pops ``extra_body`` so the caller can merge it
-    with its own ``extra_body`` rather than passing it twice (TypeError).
+    """Normalize legacy token limits and remove separately merged request data.
+
+    Pops ``extra_body`` so the caller can merge it with its own ``extra_body``
+    rather than passing it twice.
     """
     args = dict(sampling_args or {})
     if "max_tokens" in args:

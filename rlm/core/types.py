@@ -129,6 +129,11 @@ class RLMChatCompletion:
     error: str | None = (
         None  # Set when this single call failed (e.g. in a batch); response is empty.
     )
+    prompt_token_ids: tuple[int, ...] = ()
+    token_ids: tuple[int, ...] = ()
+    token_offsets: tuple[tuple[int, int], ...] = ()
+    prompt_token_count: int | None = None
+    policy_owner: str | None = None
 
     def to_dict(self):
         out = {
@@ -142,6 +147,16 @@ class RLMChatCompletion:
             out["metadata"] = self.metadata
         if self.error is not None:
             out["error"] = self.error
+        if self.prompt_token_ids:
+            out["prompt_token_ids"] = list(self.prompt_token_ids)
+        if self.token_ids:
+            out["token_ids"] = list(self.token_ids)
+        if self.token_offsets:
+            out["token_offsets"] = [list(offset) for offset in self.token_offsets]
+        if self.prompt_token_count is not None:
+            out["prompt_token_count"] = self.prompt_token_count
+        if self.policy_owner is not None:
+            out["policy_owner"] = self.policy_owner
         return out
 
     @classmethod
@@ -154,6 +169,11 @@ class RLMChatCompletion:
             execution_time=data.get("execution_time"),
             metadata=data.get("metadata"),
             error=data.get("error"),
+            prompt_token_ids=tuple(data.get("prompt_token_ids") or ()),
+            token_ids=tuple(data.get("token_ids") or ()),
+            token_offsets=tuple(tuple(offset) for offset in data.get("token_offsets") or ()),
+            prompt_token_count=data.get("prompt_token_count"),
+            policy_owner=data.get("policy_owner"),
         )
 
 

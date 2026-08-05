@@ -36,6 +36,14 @@ class BaseLM(ABC):
     async def acompletion(self, prompt: str | dict[str, Any]) -> str:
         raise NotImplementedError
 
+    async def acompletion_with_generation(
+        self, prompt: str | dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Return content plus exact sampled-ID metadata when available."""
+        content = await self.acompletion(prompt)
+        generation = self.get_last_generation()
+        return content, generation if isinstance(generation, dict) else None
+
     @abstractmethod
     def get_usage_summary(self) -> UsageSummary:
         """Get cost summary for all model calls."""
@@ -45,3 +53,12 @@ class BaseLM(ABC):
     def get_last_usage(self) -> ModelUsageSummary:
         """Get the last cost summary of the model."""
         raise NotImplementedError
+
+    def get_last_generation(self) -> dict[str, Any] | None:
+        """Return exact sampled-ID metadata when the backend can provide it.
+
+        Ordinary API clients may return ``None``. Trainable policy adapters override
+        this hook with a mapping containing ``token_ids``, optional ``token_offsets``,
+        and optional ``prompt_token_count``.
+        """
+        return None

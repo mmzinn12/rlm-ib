@@ -11,7 +11,7 @@ There are likely more things we'll want to do, but here are some things I've bee
 - [ ] **Improve documentation**. See `docs/`.
 
 Low-hanging fruit of the urgent TODOs:
-- [ ] **Add better unit tests.** I have a Mock LM class inspired by `verifiers`, but we need more comprehensive unit tests. Generally these should be made with most PRs.
+- [ ] **Add better unit tests.** We need more comprehensive unit tests, and most PRs should add focused coverage for changed behavior.
 - [ ] **Do more comprehensive bug finding**: Just find bugs and report them, we'll try to squash them all
 
 ## Would-be-nice TODOs
@@ -23,4 +23,3 @@ Low-hanging fruit of the urgent TODOs:
 ## "If you can tackle these, thanks LOL" TODOs
 - [ ] **Pipelining / asynchrony of LM calls**. This could be a paper of its own IMO, but how we deal with LM calls and how we actually implement these recursive calls can have big implications. I suspect this might happen when the repo has a massive overhaul, but something to think about.
 - [ ] **Efficient prefix caching**. Another "would be nice" thing, but requires restructuring a lot of the core logic. Could also be a paper / entire research project of its own.
-- [ ] **Training models to work as RLMs**. See the `verifiers` [rlm_env](https://github.com/PrimeIntellect-ai/verifiers/blob/main/verifiers/envs/experimental/rlm_env.py) as a starting point.

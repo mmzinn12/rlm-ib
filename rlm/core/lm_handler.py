@@ -6,8 +6,10 @@ Uses a multi-threaded socket server. Protocol: 4-byte length prefix + JSON paylo
 
 import asyncio
 import time
+from collections.abc import Callable
 from socketserver import StreamRequestHandler, ThreadingTCPServer
 from threading import Thread
+from typing import Any
 
 from rlm.clients.base_lm import BaseLM
 from rlm.core.comms_utils import LMRequest, LMResponse, socket_recv, socket_send
@@ -61,35 +63,64 @@ class LMRequestHandler(StreamRequestHandler):
     def _handle_single(self, request: LMRequest, handler: "LMHandler") -> LMResponse:
         """Handle a single prompt request."""
         client = handler.get_client(request.model, request.depth)
+        event_context = handler.plain_subcall_started(
+            request.prompt, request.model, request.depth, None
+        )
 
         start_time = time.perf_counter()
-        content = client.completion(request.prompt)
+        try:
+            content = client.completion(request.prompt)
+        except Exception as exc:
+            handler.plain_subcall_completed(
+                event_context,
+                RLMChatCompletion(
+                    root_model=request.model or client.model_name,
+                    prompt=request.prompt,
+                    response="",
+                    usage_summary=UsageSummary(model_usage_summaries={}),
+                    execution_time=time.perf_counter() - start_time,
+                    error=str(exc),
+                ),
+            )
+            raise
         end_time = time.perf_counter()
 
         model_usage = client.get_last_usage()
         root_model = request.model or client.model_name
         usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
-        return LMResponse.success_response(
-            chat_completion=RLMChatCompletion(
-                root_model=root_model,
-                prompt=request.prompt,
-                response=content,
-                usage_summary=usage_summary,
-                execution_time=end_time - start_time,
-            )
+        generation = client.get_last_generation()
+        if not isinstance(generation, dict):
+            generation = {}
+        completion = RLMChatCompletion(
+            root_model=root_model,
+            prompt=request.prompt,
+            response=content,
+            usage_summary=usage_summary,
+            execution_time=end_time - start_time,
+            prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+            token_ids=tuple(generation.get("token_ids") or ()),
+            token_offsets=tuple(tuple(offset) for offset in generation.get("token_offsets") or ()),
+            prompt_token_count=generation.get("prompt_token_count"),
+            policy_owner=generation.get("policy_owner"),
         )
+        handler.plain_subcall_completed(event_context, completion)
+        return LMResponse.success_response(chat_completion=completion)
 
     def _handle_batched(self, request: LMRequest, handler: "LMHandler") -> LMResponse:
         """Handle a batched prompts request using async for concurrency."""
         client = handler.get_client(request.model, request.depth)
 
         start_time = time.perf_counter()
+        event_contexts = [
+            handler.plain_subcall_started(prompt, request.model, request.depth, index)
+            for index, prompt in enumerate(request.prompts)
+        ]
 
         sem = asyncio.Semaphore(handler.batch_max_concurrent)
 
         async def run_one(prompt: str):
             async with sem:
-                return await client.acompletion(prompt)
+                return await client.acompletion_with_generation(prompt)
 
         async def run_all():
             tasks = [run_one(prompt) for prompt in request.prompts]
@@ -106,31 +137,41 @@ class LMRequestHandler(StreamRequestHandler):
         usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
 
         chat_completions = []
-        for prompt, content in zip(request.prompts, results, strict=True):
-            if isinstance(content, BaseException):
+        for prompt, result, event_context in zip(
+            request.prompts, results, event_contexts, strict=True
+        ):
+            if isinstance(result, BaseException):
                 # Per-prompt failure: this slot returns an error; other prompts
                 # still succeed. The error message is carried back to the caller.
-                chat_completions.append(
-                    RLMChatCompletion(
-                        root_model=root_model,
-                        prompt=prompt,
-                        response="",
-                        usage_summary=UsageSummary(model_usage_summaries={}),
-                        execution_time=0.0,
-                        error=f"llm() call failed - {content}",
-                    )
+                completion = RLMChatCompletion(
+                    root_model=root_model,
+                    prompt=prompt,
+                    response="",
+                    usage_summary=UsageSummary(model_usage_summaries={}),
+                    execution_time=0.0,
+                    error=f"llm() call failed - {result}",
                 )
+                chat_completions.append(completion)
+                handler.plain_subcall_completed(event_context, completion)
             else:
-                chat_completions.append(
-                    RLMChatCompletion(
-                        root_model=root_model,
-                        prompt=prompt,
-                        response=content,
-                        usage_summary=usage_summary,
-                        execution_time=total_time
-                        / len(request.prompts),  # approximate per-prompt time
-                    )
+                content, generation = result
+                generation = generation or {}
+                completion = RLMChatCompletion(
+                    root_model=root_model,
+                    prompt=prompt,
+                    response=content,
+                    usage_summary=usage_summary,
+                    execution_time=total_time / len(request.prompts),  # approximate per-prompt time
+                    prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+                    token_ids=tuple(generation.get("token_ids") or ()),
+                    token_offsets=tuple(
+                        tuple(offset) for offset in generation.get("token_offsets") or ()
+                    ),
+                    prompt_token_count=generation.get("prompt_token_count"),
+                    policy_owner=generation.get("policy_owner"),
                 )
+                chat_completions.append(completion)
+                handler.plain_subcall_completed(event_context, completion)
 
         return LMResponse.batched_success_response(chat_completions=chat_completions)
 
@@ -157,6 +198,8 @@ class LMHandler:
         port: int = 0,  # auto-assign available port
         other_backend_client: BaseLM | None = None,
         batch_max_concurrent: int = 16,
+        on_plain_subcall_start: Callable[[Any, str | None, int, int | None], Any] | None = None,
+        on_plain_subcall_complete: Callable[[Any, RLMChatCompletion], None] | None = None,
     ):
         self.default_client = client
         self.other_backend_client = other_backend_client
@@ -166,12 +209,25 @@ class LMHandler:
         self._thread: Thread | None = None
         self._port = port
         self.batch_max_concurrent = batch_max_concurrent
+        self.on_plain_subcall_start = on_plain_subcall_start
+        self.on_plain_subcall_complete = on_plain_subcall_complete
 
         self.register_client(client.model_name, client)
 
     def register_client(self, model_name: str, client: BaseLM) -> None:
         """Register a client for a specific model name."""
         self.clients[model_name] = client
+
+    def plain_subcall_started(
+        self, prompt: Any, model: str | None, depth: int, batch_index: int | None
+    ) -> Any:
+        if self.on_plain_subcall_start is None:
+            return None
+        return self.on_plain_subcall_start(prompt, model, depth, batch_index)
+
+    def plain_subcall_completed(self, event_context: Any, completion: RLMChatCompletion) -> None:
+        if self.on_plain_subcall_complete is not None:
+            self.on_plain_subcall_complete(event_context, completion)
 
     def get_client(self, model: str | None = None, depth: int = 0) -> BaseLM:
         """Get client by model name or depth, or return default.
@@ -225,6 +281,11 @@ class LMHandler:
     def completion(self, prompt: str, model: str | None = None) -> str:
         """Direct completion call (for main process use)."""
         return self.get_client(model).completion(prompt)
+
+    def get_last_generation(self, model: str | None = None) -> dict | None:
+        """Return exact sampled-ID metadata exposed by the selected client."""
+        generation = self.get_client(model).get_last_generation()
+        return generation if isinstance(generation, dict) else None
 
     def __enter__(self):
         self.start()

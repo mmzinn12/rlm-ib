@@ -1,80 +1,27 @@
-"""Expose the provider-independent trajectory-judge API.
+"""Minimal evidence views and scoped judge providers."""
 
-Purpose:
-    Give callers one import surface for task context, judge protocols, and structured
-    trajectory feedback.
-Implementation:
-    This package facade re-exports context isolation, judge protocols, structured
-    execution, persistent caching, and strict feedback schemas.
-Inputs:
-    Python imports from rollout, evaluation, or training code.
-Outputs:
-    Public judge interfaces and validated feedback models.
-Example:
-    ``from rlm_train.judge import TaskContext, TrajectoryFeedback``
-"""
-
-from rlm_train.judge.base import TaskContext, TrajectoryJudge
+from rlm_train.judge.aggregation import aggregate_overall_assessment
 from rlm_train.judge.cache import (
-    FeedbackCache,
-    MemoryFeedbackCache,
-    SQLiteFeedbackCache,
-    make_feedback_cache_key,
-    make_trajectory_feedback_cache_key,
+    JudgeCache,
+    MemoryJudgeCache,
+    SQLiteJudgeCache,
+    make_judge_view_cache_key,
 )
-from rlm_train.judge.context import (
-    PrivilegedContextDescriptor,
-    PrivilegedContextProvider,
-    PrivilegedJudgeContext,
-)
-from rlm_train.judge.privileged import PrivilegedContextTrajectoryJudge
-from rlm_train.judge.providers import (
-    DeterministicFakeStructuredJudgeClient,
-    JudgeProviderCall,
-    OpenAIStructuredJudgeClient,
-)
-from rlm_train.judge.schema import (
-    DiagnosticQuestionTeacherFeedback,
-    FactualQuestionTeacherFeedback,
-    InformationValueFeedback,
-    NodeFeedback,
-    QuestionTeacherFeedback,
-    TeacherFeedbackMode,
-    TrajectoryFeedback,
-)
-from rlm_train.judge.structured import (
-    JudgeExecutionMetrics,
-    JudgeResponseError,
-    StructuredJudgeClient,
-    StructuredJudgeRequest,
-    StructuredOutputTrajectoryJudge,
-)
+from rlm_train.judge.prompts import build_judge_instructions, render_judge_view
+from rlm_train.judge.protocol import Judge
+from rlm_train.judge.providers import DeterministicFakeJudge
+from rlm_train.judge.views import JudgeView, build_judge_view
 
 __all__ = [
-    "FeedbackCache",
-    "DiagnosticQuestionTeacherFeedback",
-    "FactualQuestionTeacherFeedback",
-    "InformationValueFeedback",
-    "JudgeProviderCall",
-    "JudgeExecutionMetrics",
-    "JudgeResponseError",
-    "MemoryFeedbackCache",
-    "NodeFeedback",
-    "PrivilegedContextDescriptor",
-    "PrivilegedContextProvider",
-    "PrivilegedContextTrajectoryJudge",
-    "PrivilegedJudgeContext",
-    "QuestionTeacherFeedback",
-    "TeacherFeedbackMode",
-    "SQLiteFeedbackCache",
-    "DeterministicFakeStructuredJudgeClient",
-    "OpenAIStructuredJudgeClient",
-    "StructuredJudgeClient",
-    "StructuredJudgeRequest",
-    "StructuredOutputTrajectoryJudge",
-    "TaskContext",
-    "TrajectoryFeedback",
-    "TrajectoryJudge",
-    "make_feedback_cache_key",
-    "make_trajectory_feedback_cache_key",
+    "DeterministicFakeJudge",
+    "Judge",
+    "JudgeCache",
+    "JudgeView",
+    "MemoryJudgeCache",
+    "SQLiteJudgeCache",
+    "aggregate_overall_assessment",
+    "build_judge_instructions",
+    "build_judge_view",
+    "make_judge_view_cache_key",
+    "render_judge_view",
 ]

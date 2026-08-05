@@ -1,0 +1,68 @@
+schema_version = 1
+
+[student]
+adapter = "transformers"
+model_id = "HuggingFaceTB/SmolLM2-135M-Instruct"
+revision = "12fd25f77366fa6b3b4b768ec3050bf629380bac"
+trainable = true
+
+[rollout]
+engine = "rlm"
+environment = "local"
+max_depth = 2
+max_iterations = 20
+max_concurrent_subcalls = 4
+
+[judge]
+provider = "fake"
+model = "deterministic-fake"
+model_revision = "v1"
+schema = "trajectory-v1"
+
+[teacher]
+strategy = "current_policy"
+feedback_conditioning = true
+
+[feedback]
+default_scope = "retrospective_local"
+upstream_depth = 1
+downstream_depth = 1
+include_siblings = false
+allow_privileged_hindsight_distillation = false
+
+[objectives.sdpo]
+enabled = true
+weight = 1.0
+token_scope = "helper_questions"
+feedback_scope = "retrospective_local"
+divergence = "forward_kl"
+target_support = "top_k_with_tail"
+top_k = 32
+
+[training_dataset]
+adapter = "jsonl"
+source = "training/benchmarks/synthetic-arithmetic.jsonl"
+split = "train"
+name = "synthetic-arithmetic"
+version = "v1"
+
+[evaluation]
+recursive_policy = true
+benchmarks = ["synthetic-arithmetic"]
+samples_per_problem = 1
+checkpoint_steps = [0]
+base_seed = 0
+
+[artifacts]
+output_directory = "training/outputs/full-rlm-example"
+rollout_json = "all"
+metrics_jsonl = true
+
+[runtime]
+device = "auto"
+precision = "fp32"
+seed = 0
+gradient_accumulation_steps = 1
+max_optimizer_steps = 1
+learning_rate = 0.0002
+max_gradient_norm = 1.0

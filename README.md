@@ -34,7 +34,7 @@ RLMs are a bet on future "language model" design choices. We argue for a [CodeAc
 
 This repository provides both an extensible inference engine and training environment for using RLMs around standard API-based and local LLMs. The initial experiments and idea were proposed in a [blogpost](https://alexzhang13.github.io/blog/2025/rlm/) in 2025, with expanded results in an [arXiv preprint](https://arxiv.org/abs/2512.24601).
 
-We now also include a [verifiers](https://github.com/PrimeIntellect-ai/verifiers) training environment based on Prime Intellect's [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) in the `training/` folder. Train your own RLMs, which directly can be plugged into our inference engine!
+The `training/` package trains and evaluates the complete recursive policy through the same `rlm.RLM` engine used for inference. It includes typed rollout events, exact-token policy adapters, scoped judging and feedback, teacher strategies, and composable GRPO, SDPO, and Gram objectives.
 
 > [!NOTE]
 > This repository contains inference code for RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the paper from the MIT OASYS lab.
@@ -130,9 +130,9 @@ export PRIME_API_KEY=...
 We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI client](https://github.com/alexzhang13/rlm/blob/main/rlm/clients/openai.py)). To view or add support for more clients, start by looking at [`rlm/clients/`](https://github.com/alexzhang13/rlm/tree/main/rlm/clients).
 
 ## Training
-We provide a simple RL training harness for training RLMs used in this repo (specifically the `local` REPL). The implementation uses no sandboxes for simplicity and slots easily your use case, but an ideal setup would use sandboxes for safety. Training logic is isolated to the [`training/`](https://github.com/alexzhang13/rlm/tree/main/training) folder, which exposes `rlm.RLM` as a [`verifiers`](https://github.com/willccbb/verifiers) `Environment` and plugs straight into [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl). See the [training README](https://github.com/alexzhang13/rlm/tree/main/training#readme) for the launch command. The harness uses subprocess-isolated local REPL execution (no cloud sandboxes), matching the `local` environment above.
+The [`training/`](https://github.com/alexzhang13/rlm/tree/main/training) package provides full-policy training and evaluation for RLMs. Root generations, REPL execution, helper calls, recursive child RLMs, state, hierarchy, and final-answer submission all use the canonical inference runtime. Runs are configured with an immutable `RunSpec`; deployment-specific models, datasets, judges, and optimizers are resolved through the component factory or injected directly. See the [training README](https://github.com/alexzhang13/rlm/tree/main/training#readme) and [`full-rlm-example.toml`](https://github.com/alexzhang13/rlm/blob/main/training/configs/full-rlm-example.toml).
 
-A worked example with an example `.toml` lives in [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) (OOLONG long-context QA). New training environments can be added the same way — author a `verifiers` env that wraps your task (see the [verifiers docs](https://verifiers.readthedocs.io/)), then reference it from a config.
+The original [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) dataset and scoring implementation is retained as a migration example for future OOLONG training.
 
 ## Relevant Reading
 * **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)

@@ -1,56 +1,46 @@
-"""Verify fixed, EMA, and no-teacher lifecycle behavior without a trainer."""
+"""Lifecycle tests for canonical fixed and EMA teachers."""
+
+import copy
 
 import pytest
 
-from rlm_train.sdpo import (
-    TeacherStrategy,
-    TorchEMATeacherController,
-    TorchFixedTeacherController,
-    build_torch_teacher_controller,
-)
+from rlm_train.teachers import EMATeacher, FixedTeacher
 
 
-def test_fixed_teacher_fingerprint_and_parameters_remain_unchanged_after_student_steps():
+class TorchPolicy:
+    def __init__(self, module):
+        self.module = module
+
+    def trainable_parameters(self):
+        return self.module.parameters()
+
+
+def test_fixed_teacher_has_no_optimizer_step_mutation():
     torch = pytest.importorskip("torch")
-    student = torch.nn.Linear(2, 1, bias=False)
-    with torch.no_grad():
-        student.weight.fill_(2.0)
-    controller = TorchFixedTeacherController.from_student(
-        student,
-        checkpoint_identity="checkpoint-before-training",
-    )
-    before = controller.identity()
-    with torch.no_grad():
-        student.weight.fill_(9.0)
+    module = torch.nn.Linear(2, 1, bias=False)
+    policy = TorchPolicy(copy.deepcopy(module))
+    teacher = FixedTeacher(policy)
+    before = tuple(parameter.detach().clone() for parameter in policy.trainable_parameters())
 
-    controller.update_after_optimizer_step(student)
-    after = controller.identity()
+    teacher.after_optimizer_step()
 
-    assert before == after
-    torch.testing.assert_close(controller.teacher.weight, torch.full((1, 2), 2.0))
-    assert all(not parameter.requires_grad for parameter in controller.teacher.parameters())
+    for expected, actual in zip(before, policy.trainable_parameters(), strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
-def test_fixed_teacher_detects_illegal_mutation():
+def test_ema_teacher_updates_toward_student_after_optimizer_step():
     torch = pytest.importorskip("torch")
-    controller = TorchFixedTeacherController.from_student(torch.nn.Linear(1, 1))
+    student_module = torch.nn.Linear(1, 1, bias=False)
+    teacher_module = copy.deepcopy(student_module)
     with torch.no_grad():
-        controller.teacher.weight.add_(1.0)
-
-    with pytest.raises(RuntimeError, match="fixed teacher state changed"):
-        controller.validate_unchanged()
-
-
-def test_teacher_factory_supports_none_fixed_and_ema():
-    torch = pytest.importorskip("torch")
-    student = torch.nn.Linear(1, 1)
-
-    assert build_torch_teacher_controller(TeacherStrategy.NONE, student) is None
-    assert isinstance(
-        build_torch_teacher_controller(TeacherStrategy.FIXED, student),
-        TorchFixedTeacherController,
+        student_module.weight.fill_(2.0)
+        teacher_module.weight.fill_(0.0)
+    teacher = EMATeacher(
+        TorchPolicy(teacher_module),
+        TorchPolicy(student_module),
+        decay=0.75,
     )
-    assert isinstance(
-        build_torch_teacher_controller(TeacherStrategy.EMA, student),
-        TorchEMATeacherController,
-    )
+
+    teacher.after_optimizer_step()
+
+    torch.testing.assert_close(teacher_module.weight, torch.full((1, 1), 0.5))

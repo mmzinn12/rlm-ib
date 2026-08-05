@@ -17,13 +17,13 @@ Example:
 import pytest
 from pydantic import ValidationError
 
-from rlm_train.regularization.config import (
+from rlm_train.objectives.gram.config import (
     GramAnchorConfig,
     GramAnchorSourceConfig,
     GramLayerSelectionConfig,
     JSTokenSamplingConfig,
 )
-from rlm_train.regularization.selectors import resolve_layer_selection
+from rlm_train.objectives.gram.selection import resolve_layer_selection
 
 
 def test_default_relative_layers_resolve_once_at_locked_depths():

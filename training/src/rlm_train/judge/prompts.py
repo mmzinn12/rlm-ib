@@ -13,6 +13,12 @@ Example:
     ``prompt = build_judge_instructions("Check scientific support.")``
 """
 
+from __future__ import annotations
+
+import json
+
+from rlm_train.judge.views import JudgeView
+
 SUBCALL_INFORMATION_VALUE_INSTRUCTIONS = """
 Evaluate each subcall or question by the significance of the information it revealed relative to
 what was available before the call. Do not score it by whether it helped produce the final answer,
@@ -37,3 +43,17 @@ def build_judge_instructions(task_instructions: str = "") -> str:
     if task_instructions:
         sections.append(task_instructions.strip())
     return "\n\n".join(sections)
+
+
+def render_judge_view(view: JudgeView, *, instructions: str) -> tuple[str, str]:
+    """Render only a pre-authorized typed view; never accept a full rollout here."""
+    if not instructions.strip():
+        raise ValueError("judge instructions must not be blank")
+    payload = json.dumps(
+        view.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return instructions, payload

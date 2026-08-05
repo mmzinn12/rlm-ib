@@ -1,4 +1,4 @@
-"""OOLONG synth long-context QA, wired through RLMTrainEnv."""
+"""OOLONG synth long-context QA, wired through the legacy RLMTrainEnv."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from datetime import datetime
 from typing import Any
 
 import dateutil.parser
-import rlm_train
 import verifiers as vf
 from datasets import Dataset, load_dataset
+
+import rlm_train
 
 COMPARISON_PHRASES = ("more common than", "less common than", "same frequency as")
 

@@ -4,7 +4,23 @@ from contextlib import contextmanager
 from typing import Any
 
 from rlm.clients import BaseLM, get_client
+from rlm.core.events import (
+    CodeExecutionCompleted,
+    CodeExecutionStarted,
+    EventProducer,
+    FinalAnswerSubmitted,
+    HelperQuestionGenerated,
+    InvocationCompleted,
+    InvocationFailed,
+    InvocationStarted,
+    PlainSubcallStarted,
+    RecursiveSubcallStarted,
+    StudentGenerationCompleted,
+    StudentGenerationStarted,
+    SubcallCompleted,
+)
 from rlm.core.lm_handler import LMHandler
+from rlm.core.observers import EventEmitter, NoOpObserver, RLMObserver
 from rlm.core.types import (
     ClientBackend,
     CodeBlock,
@@ -78,6 +94,13 @@ class RLM:
         sub_sampling_args: dict[str, Any] | None = None,
         orchestrator: bool = True,
         user_prologue: str | None = None,
+        observer: RLMObserver | None = None,
+        rollout_id: str | None = None,
+        policy_owner: str | None = None,
+        event_emitter: EventEmitter | None = None,
+        invocation_id: str | None = None,
+        parent_invocation_id: str | None = None,
+        client: BaseLM | None = None,
     ):
         """
         Args:
@@ -113,6 +136,12 @@ class RLM:
             on_iteration_start: Callback fired when an iteration starts. Args: (depth, iteration_num).
             on_iteration_complete: Callback fired when an iteration completes. Args: (depth, iteration_num, duration).
         """
+        if client is not None and other_backends is not None:
+            raise ValueError("an injected policy cannot be combined with other_backends")
+        if client is not None and sub_sampling_args is not None:
+            raise ValueError(
+                "an injected policy requires one sampling policy across root and subcalls"
+            )
         # Sampling args plumbed into backend_kwargs / other_backend_kwargs
         # before the clients are constructed, so they reach the chat-completions
         # call (e.g. temperature, top_p, max_tokens, seed). ``sampling_args``
@@ -178,6 +207,14 @@ class RLM:
         # ``user_prologue`` so canonical inference can match envs that
         # depend on a task-specific tips message (e.g. BC+).
         self.user_prologue = user_prologue
+        self.policy_owner = policy_owner or (
+            backend_kwargs.get("model_name", "unknown") if backend_kwargs else "unknown"
+        )
+        self.event_emitter = event_emitter or EventEmitter(observer or NoOpObserver(), rollout_id)
+        self.invocation_id = invocation_id
+        self.parent_invocation_id = parent_invocation_id
+        self.current_invocation_id: str | None = None
+        self.client = client
         self.logger = logger
         self.verbose = VerbosePrinter(enabled=verbose)
 
@@ -231,14 +268,19 @@ class RLM:
         When persistent=False (default), creates fresh environment each call.
         """
         # Create client and wrap in handler
-        client: BaseLM = get_client(self.backend, self.backend_kwargs)
+        client = self.client or get_client(self.backend, self.backend_kwargs)
 
         # Create other_backend_client if provided (for depth=1 routing)
         other_backend_client: BaseLM | None = None
         if self.other_backends and self.other_backend_kwargs:
             other_backend_client = get_client(self.other_backends[0], self.other_backend_kwargs[0])
 
-        lm_handler = LMHandler(client, other_backend_client=other_backend_client)
+        lm_handler = LMHandler(
+            client,
+            other_backend_client=other_backend_client,
+            on_plain_subcall_start=self.handle_plain_subcall_started,
+            on_plain_subcall_complete=self.handle_plain_subcall_completed,
+        )
 
         # Register other clients to be available as sub-call options (by model name).
         # Reuse other_backend_client for the first entry so each (backend, kwargs)
@@ -285,6 +327,8 @@ class RLM:
             if self.compaction and self.environment_type in ("local", "docker"):
                 env_kwargs["compaction"] = True
             env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
+            if self.environment_type == "local":
+                env_kwargs["event_callback"] = self.handle_environment_event
             environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
 
             if self.persistent:
@@ -324,6 +368,52 @@ class RLM:
         return message_history
 
     def completion(
+        self, prompt: str | dict[str, Any], root_prompt: str | None = None
+    ) -> RLMChatCompletion:
+        """Execute one observed canonical RLM invocation."""
+        invocation_id = self.invocation_id or self.event_emitter.new_invocation_id()
+        self.current_invocation_id = invocation_id
+        source_model = self.policy_owner
+        self.event_emitter.emit(
+            InvocationStarted,
+            invocation_id=invocation_id,
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.RUNTIME,
+            policy_owner=self.policy_owner,
+            source_model=source_model,
+            prompt=prompt,
+            depth=self.depth,
+            node_role="root" if self.depth == 0 else "recursive_subcall",
+        )
+        started = time.perf_counter()
+        try:
+            result = self.run_completion(prompt, root_prompt=root_prompt)
+        except BaseException as exc:
+            self.event_emitter.emit(
+                InvocationFailed,
+                invocation_id=invocation_id,
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.RUNTIME,
+                policy_owner=self.policy_owner,
+                source_model=source_model,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
+        response = result.response if isinstance(result, RLMChatCompletion) else str(result)
+        self.event_emitter.emit(
+            InvocationCompleted,
+            invocation_id=invocation_id,
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.RUNTIME,
+            policy_owner=self.policy_owner,
+            source_model=source_model,
+            result=response,
+            execution_time=time.perf_counter() - started,
+        )
+        return result
+
+    def run_completion(
         self, prompt: str | dict[str, Any], root_prompt: str | None = None
     ) -> RLMChatCompletion:
         """
@@ -432,6 +522,7 @@ class RLM:
                     self.verbose.print_iteration(iteration, i + 1)
 
                     if final_answer is not None:
+                        self.emit_final_answer(final_answer)
                         time_end = time.perf_counter()
                         usage = lm_handler.get_usage_summary()
                         self.verbose.print_final_answer(final_answer)
@@ -470,6 +561,7 @@ class RLM:
             # Default behavior: we run out of iterations, provide one final answer
             time_end = time.perf_counter()
             final_answer = self._default_answer(message_history, lm_handler)
+            self.emit_final_answer(final_answer)
             usage = lm_handler.get_usage_summary()
             self.verbose.print_final_answer(final_answer)
             self.verbose.print_summary(self.max_iterations, time_end - time_start, usage.to_dict())
@@ -654,13 +746,61 @@ class RLM:
         and code execution + tool execution.
         """
         iter_start = time.perf_counter()
+        invocation_id = self.require_invocation_id()
+        generation_id = self.event_emitter.new_generation_id()
+        self.event_emitter.emit(
+            StudentGenerationStarted,
+            invocation_id=invocation_id,
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            prompt=prompt,
+            decision_role="reasoning",
+        )
         response = lm_handler.completion(prompt)
+        generation = lm_handler.get_last_generation() or {}
+        self.event_emitter.emit(
+            StudentGenerationCompleted,
+            invocation_id=invocation_id,
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=str(generation.get("policy_owner") or self.policy_owner),
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            text=response,
+            prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+            token_ids=tuple(generation.get("token_ids") or ()),
+            token_offsets=tuple(tuple(offset) for offset in generation.get("token_offsets") or ()),
+            prompt_token_count=generation.get("prompt_token_count"),
+            decision_role="reasoning",
+        )
         code_block_strs = find_code_blocks(response)
         code_blocks = []
 
-        for code_block_str in code_block_strs:
+        for block_index, code_block_str in enumerate(code_block_strs):
+            self.event_emitter.emit(
+                CodeExecutionStarted,
+                invocation_id=invocation_id,
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.ENVIRONMENT,
+                code=code_block_str,
+                block_index=block_index,
+            )
             code_result: REPLResult = environment.execute_code(code_block_str)
             code_blocks.append(CodeBlock(code=code_block_str, result=code_result))
+            self.event_emitter.emit(
+                CodeExecutionCompleted,
+                invocation_id=invocation_id,
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.ENVIRONMENT,
+                code=code_block_str,
+                block_index=block_index,
+                stdout=code_result.stdout,
+                stderr=code_result.stderr,
+                final_answer=code_result.final_answer,
+            )
 
         iteration_time = time.perf_counter() - iter_start
         return RLMIteration(
@@ -681,7 +821,35 @@ class RLM:
                 "content": "Please provide a final answer to the user's question based on the information provided.",
             }
         ]
+        generation_id = self.event_emitter.new_generation_id()
+        self.event_emitter.emit(
+            StudentGenerationStarted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            prompt=current_prompt,
+            decision_role="final_answer",
+        )
         response = lm_handler.completion(current_prompt)
+        generation = lm_handler.get_last_generation() or {}
+        self.event_emitter.emit(
+            StudentGenerationCompleted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=str(generation.get("policy_owner") or self.policy_owner),
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            text=response,
+            prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+            token_ids=tuple(generation.get("token_ids") or ()),
+            token_offsets=tuple(tuple(offset) for offset in generation.get("token_offsets") or ()),
+            prompt_token_count=generation.get("prompt_token_count"),
+            decision_role="final_answer",
+        )
 
         if self.logger:
             self.logger.log(
@@ -699,11 +867,44 @@ class RLM:
         """
         Fallback behavior if the RLM is actually at max depth, and should be treated as an LM.
         """
-        client: BaseLM = get_client(self.backend, self.backend_kwargs)
+        client = self.client or get_client(self.backend, self.backend_kwargs)
+        generation_id = self.event_emitter.new_generation_id()
+        self.event_emitter.emit(
+            StudentGenerationStarted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            prompt=message,
+            decision_role="final_answer",
+        )
         response = client.completion(message)
+        generation = client.get_last_generation()
+        if not isinstance(generation, dict):
+            generation = {}
+        self.event_emitter.emit(
+            StudentGenerationCompleted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=str(generation.get("policy_owner") or self.policy_owner),
+            source_model=self.policy_owner,
+            generation_id=generation_id,
+            text=response,
+            prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+            token_ids=tuple(generation.get("token_ids") or ()),
+            token_offsets=tuple(tuple(offset) for offset in generation.get("token_offsets") or ()),
+            prompt_token_count=generation.get("prompt_token_count"),
+            decision_role="final_answer",
+        )
+        self.emit_final_answer(response)
         return response
 
-    def _subcall(self, prompt: str, model: str | None = None) -> RLMChatCompletion:
+    def _subcall(
+        self, prompt: str, model: str | None = None, subcall_id: str | None = None
+    ) -> RLMChatCompletion:
         """
         Handle a subcall from the environment, potentially spawning a child RLM.
 
@@ -729,14 +930,37 @@ class RLM:
         else:
             child_backend_kwargs = self.backend_kwargs
         resolved_model = model or (child_backend_kwargs or {}).get("model_name", "unknown")
+        if subcall_id is None:
+            subcall_id = self.event_emitter.new_subcall_id()
+            self.event_emitter.emit(
+                HelperQuestionGenerated,
+                invocation_id=self.require_invocation_id(),
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.STUDENT,
+                policy_owner=self.policy_owner,
+                source_model=self.policy_owner,
+                question=prompt,
+                subcall_id=subcall_id,
+                subcall_kind="recursive",
+            )
 
         # If we'd hit/exceed the cap, do a normal LM completion (no REPL)
         if next_depth >= self.max_depth:
+            self.event_emitter.emit(
+                PlainSubcallStarted,
+                invocation_id=self.require_invocation_id(),
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.STUDENT,
+                policy_owner=self.policy_owner,
+                source_model=str(resolved_model),
+                subcall_id=subcall_id,
+                prompt=prompt,
+            )
             # Use other_backend if available, otherwise use main backend
             if self.other_backends and self.other_backend_kwargs:
                 client = get_client(self.other_backends[0], self.other_backend_kwargs[0])
             else:
-                client = get_client(self.backend, child_backend_kwargs or {})
+                client = self.client or get_client(self.backend, child_backend_kwargs or {})
             root_model = model or client.model_name
             start_time = time.perf_counter()
             try:
@@ -744,22 +968,50 @@ class RLM:
                 end_time = time.perf_counter()
                 model_usage = client.get_last_usage()
                 usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
-                return RLMChatCompletion(
+                generation = client.get_last_generation()
+                if not isinstance(generation, dict):
+                    generation = {}
+                completion = RLMChatCompletion(
                     root_model=root_model,
                     prompt=prompt,
                     response=response,
                     usage_summary=usage_summary,
                     execution_time=end_time - start_time,
+                    prompt_token_ids=tuple(generation.get("prompt_token_ids") or ()),
+                    token_ids=tuple(generation.get("token_ids") or ()),
+                    token_offsets=tuple(
+                        tuple(offset) for offset in generation.get("token_offsets") or ()
+                    ),
+                    prompt_token_count=generation.get("prompt_token_count"),
+                    policy_owner=str(generation.get("policy_owner") or self.policy_owner),
                 )
+                self.emit_subcall_completed(subcall_id, completion, "plain")
+                return completion
             except Exception as e:
                 end_time = time.perf_counter()
-                return RLMChatCompletion(
+                completion = RLMChatCompletion(
                     root_model=root_model,
                     prompt=prompt,
                     response=f"Error: LM query failed at max depth - {e}",
                     usage_summary=UsageSummary(model_usage_summaries={}),
                     execution_time=end_time - start_time,
+                    error=str(e),
                 )
+                self.emit_subcall_completed(subcall_id, completion, "plain")
+                return completion
+
+        child_invocation_id = self.event_emitter.new_invocation_id()
+        self.event_emitter.emit(
+            RecursiveSubcallStarted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=str(resolved_model),
+            subcall_id=subcall_id,
+            child_invocation_id=child_invocation_id,
+            prompt=prompt,
+        )
 
         # Calculate remaining budget for child (if budget tracking enabled)
         remaining_budget = None
@@ -831,33 +1083,55 @@ class RLM:
             # Propagate callbacks to children for nested tracking
             on_subcall_start=self.on_subcall_start,
             on_subcall_complete=self.on_subcall_complete,
+            observer=None,
+            policy_owner=self.policy_owner,
+            event_emitter=self.event_emitter,
+            invocation_id=child_invocation_id,
+            parent_invocation_id=self.require_invocation_id(),
+            client=self.client,
         )
         try:
             result = child.completion(prompt, root_prompt=None)
             # Track child's cost in parent's cumulative cost
             if result.usage_summary and result.usage_summary.total_cost:
                 self._cumulative_cost += result.usage_summary.total_cost
+            self.emit_subcall_completed(
+                subcall_id,
+                result,
+                "recursive",
+                child_invocation_id=child_invocation_id,
+            )
             return result
         except BudgetExceededError as e:
             # Propagate child's spending to parent
             self._cumulative_cost += e.spent
             error_msg = f"Budget exceeded - {e}"
-            return RLMChatCompletion(
+            completion = RLMChatCompletion(
                 root_model=resolved_model,
                 prompt=prompt,
                 response=f"Error: Child RLM budget exceeded - {e}",
                 usage_summary=UsageSummary(model_usage_summaries={}),
                 execution_time=time.perf_counter() - subcall_start,
+                error=error_msg,
             )
+            self.emit_subcall_completed(
+                subcall_id, completion, "recursive", child_invocation_id=child_invocation_id
+            )
+            return completion
         except Exception as e:
             error_msg = str(e)
-            return RLMChatCompletion(
+            completion = RLMChatCompletion(
                 root_model=resolved_model,
                 prompt=prompt,
                 response=f"Error: Child RLM completion failed - {e}",
                 usage_summary=UsageSummary(model_usage_summaries={}),
                 execution_time=time.perf_counter() - subcall_start,
+                error=error_msg,
             )
+            self.emit_subcall_completed(
+                subcall_id, completion, "recursive", child_invocation_id=child_invocation_id
+            )
+            return completion
         finally:
             # Ensure child resources are cleaned up
             child.close()
@@ -868,6 +1142,117 @@ class RLM:
                     self.on_subcall_complete(next_depth, str(resolved_model), duration, error_msg)
                 except Exception:
                     pass  # Don't let callback errors break execution
+
+    def require_invocation_id(self) -> str:
+        """Return the active invocation ID or fail on invalid internal use."""
+        if self.current_invocation_id is None:
+            self.current_invocation_id = (
+                self.invocation_id or self.event_emitter.new_invocation_id()
+            )
+        return self.current_invocation_id
+
+    def emit_final_answer(self, answer: str) -> None:
+        self.event_emitter.emit(
+            FinalAnswerSubmitted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=self.policy_owner,
+            answer=answer,
+        )
+
+    def handle_environment_event(self, name: str, payload: dict[str, Any]) -> str | None:
+        """Translate local-environment helper activity into core events."""
+        if name == "helper_question":
+            kind = str(payload["subcall_kind"])
+            if kind == "plain":
+                return None
+            subcall_id = self.event_emitter.new_subcall_id()
+            self.event_emitter.emit(
+                HelperQuestionGenerated,
+                invocation_id=self.require_invocation_id(),
+                parent_invocation_id=self.parent_invocation_id,
+                producer=EventProducer.STUDENT,
+                policy_owner=self.policy_owner,
+                source_model=self.policy_owner,
+                question=str(payload["question"]),
+                subcall_id=subcall_id,
+                subcall_kind=kind,
+                batch_index=payload.get("batch_index"),
+            )
+            return subcall_id
+        if name == "plain_subcall_completed":
+            completion = payload["completion"]
+            self.emit_subcall_completed(str(payload["subcall_id"]), completion, "plain")
+        return None
+
+    def handle_plain_subcall_started(
+        self,
+        prompt: Any,
+        model: str | None,
+        depth: int,
+        batch_index: int | None,
+    ) -> str:
+        """Record a plain helper call forwarded through any environment transport."""
+        del depth
+        question = str(prompt)
+        subcall_id = self.event_emitter.new_subcall_id()
+        self.event_emitter.emit(
+            HelperQuestionGenerated,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=self.policy_owner,
+            question=question,
+            subcall_id=subcall_id,
+            subcall_kind="plain",
+            batch_index=batch_index,
+        )
+        self.event_emitter.emit(
+            PlainSubcallStarted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=self.policy_owner,
+            source_model=str(model or self.policy_owner),
+            subcall_id=subcall_id,
+            prompt=question,
+            batch_index=batch_index,
+        )
+        return subcall_id
+
+    def handle_plain_subcall_completed(
+        self, subcall_id: Any, completion: RLMChatCompletion
+    ) -> None:
+        if isinstance(subcall_id, str):
+            self.emit_subcall_completed(subcall_id, completion, "plain")
+
+    def emit_subcall_completed(
+        self,
+        subcall_id: str,
+        completion: RLMChatCompletion,
+        subcall_kind: str,
+        *,
+        child_invocation_id: str | None = None,
+    ) -> None:
+        self.event_emitter.emit(
+            SubcallCompleted,
+            invocation_id=self.require_invocation_id(),
+            parent_invocation_id=self.parent_invocation_id,
+            producer=EventProducer.STUDENT,
+            policy_owner=completion.policy_owner or self.policy_owner,
+            source_model=completion.root_model,
+            subcall_id=subcall_id,
+            response=completion.response,
+            subcall_kind=subcall_kind,
+            child_invocation_id=child_invocation_id,
+            prompt_token_ids=completion.prompt_token_ids,
+            token_ids=completion.token_ids,
+            token_offsets=completion.token_offsets,
+            error=completion.error,
+        )
 
     def _validate_persistent_environment_support(self) -> None:
         """
