@@ -52,11 +52,16 @@ def extract_topk_teacher_target(
     if not torch.isfinite(teacher_logits).all().item():
         raise ValueError("teacher logits must be finite")
     with torch.no_grad():
-        logprobs = torch.log_softmax(teacher_logits.detach(), dim=-1)
+        # float64 keeps the compact top-k + tail distribution summing to one within 1e-8.
+        logprobs = torch.log_softmax(teacher_logits.detach().to(dtype=torch.float64), dim=-1)
         topk_logprobs, token_ids = torch.topk(logprobs, k=top_k, dim=-1)
         tail_values = logprobs.clone()
         tail_values.scatter_(dim=-1, index=token_ids, value=-torch.inf)
         tail_logprobs = torch.logsumexp(tail_values, dim=-1)
+        compact_logprobs = torch.cat((topk_logprobs, tail_logprobs.unsqueeze(-1)), dim=-1)
+        compact_normalizer = torch.logsumexp(compact_logprobs, dim=-1, keepdim=True)
+        topk_logprobs = topk_logprobs - compact_normalizer
+        tail_logprobs = tail_logprobs - compact_normalizer.squeeze(-1)
     return TopKTeacherTarget(
         token_ids=tuple(tuple(int(value) for value in row) for row in token_ids.cpu().tolist()),
         logprobs=tuple(

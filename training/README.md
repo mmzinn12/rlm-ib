@@ -99,6 +99,31 @@ Every enabled objective selects its own token scope: `natural_language`,
 stored as explainable ranges and reconstructed as runtime masks. Only tokens owned by the
 configured student can be active.
 
+### Configurable LLM judge output
+
+The judge is a RunSpec component. OpenAI-compatible endpoints support a reliable
+categorical contract and the original bounded numeric contract:
+
+```toml
+[judge]
+provider = "openai"
+model = "Qwen/Qwen2.5-7B-Instruct:together"
+model_revision = "pinned-revision"
+mode = "categorical" # or "full"
+schema = "edge-information-v1"
+prompt_version = "edge-information-v1"
+api_key_environment = "OPENAI_API_KEY"
+base_url = "https://router.huggingface.co/v1"
+max_attempts = 3
+```
+
+`categorical` asks the LLM for enum labels and maps those labels deterministically to
+bounded numeric values. `full` asks the LLM to emit the bounded numeric values directly.
+Both modes return the same `ScopedAssessment` boundary, so objectives and teachers do
+not branch on provider output format. Register the configured component with
+`rlm_train.runtime.register_judge_builder(factory)` or inject a `Judge` directly for
+research runs.
+
 ## Entry points
 
 ```python

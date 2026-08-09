@@ -69,3 +69,20 @@ def test_topk_target_extraction_retains_tail_probability_mass():
 
     assert retained_mass + math.exp(target.tail_logprobs[0]) == pytest.approx(1.0)
     assert target.teacher_version == 3
+
+
+def test_topk_target_extraction_normalizes_large_vocab_within_tolerance():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    target = extract_topk_teacher_target(
+        torch.randn(8, 151_936, dtype=torch.float32),
+        top_k=100,
+        teacher_version=0,
+        tokenizer_fingerprint="normalization-test",
+    )
+    masses = [
+        sum(math.exp(value) for value in row) + math.exp(tail)
+        for row, tail in zip(target.logprobs, target.tail_logprobs, strict=True)
+    ]
+
+    assert max(abs(mass - 1.0) for mass in masses) < 1e-8

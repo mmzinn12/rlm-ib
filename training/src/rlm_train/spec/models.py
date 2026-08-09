@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 
 class ImmutableSpec(BaseModel):
@@ -29,14 +29,31 @@ class StudentSpec(ImmutableSpec):
         return self.policy_owner or f"student:{self.model_id}:{self.revision or 'default'}"
 
 
+class JudgeMode(StrEnum):
+    """Select the structured assessment contract used by an LLM judge."""
+
+    CATEGORICAL = "categorical"
+    FULL = "full"
+
+
 class JudgeSpec(ImmutableSpec):
     provider: str = Field(default="fake", min_length=1)
     model: str = Field(default="deterministic-fake", min_length=1)
     model_revision: str = Field(default="v1", min_length=1)
     schema_name: str = Field(default="trajectory-v1", alias="schema", min_length=1)
     prompt_version: str = Field(default="v1", min_length=1)
+    mode: JudgeMode = JudgeMode.CATEGORICAL
+    api_key_environment: str = Field(default="OPENAI_API_KEY", min_length=1)
+    base_url: AnyHttpUrl | None = None
+    max_attempts: int = Field(default=3, ge=1, le=5)
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_provider(self) -> JudgeSpec:
+        if self.provider == "openai" and self.model == "deterministic-fake":
+            raise ValueError("openai judge provider requires a real model route")
+        return self
 
 
 class TeacherStrategy(StrEnum):
@@ -68,6 +85,7 @@ class TeacherSpec(ImmutableSpec):
 
 __all__ = [
     "ImmutableSpec",
+    "JudgeMode",
     "JudgeSpec",
     "StudentSpec",
     "TeacherSpec",

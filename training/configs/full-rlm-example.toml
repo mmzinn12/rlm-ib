@@ -18,6 +18,8 @@ provider = "fake"
 model = "deterministic-fake"
 model_revision = "v1"
 schema = "trajectory-v1"
+mode = "categorical"
+max_attempts = 3
 
 [teacher]
 strategy = "current_policy"

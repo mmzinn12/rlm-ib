@@ -3,7 +3,7 @@
 from rlm_train.spec.artifacts import ArtifactSpec
 from rlm_train.spec.evaluation import EvaluationSpec
 from rlm_train.spec.feedback import AssessmentScope, FeedbackSpec
-from rlm_train.spec.models import JudgeSpec, StudentSpec, TeacherSpec, TeacherStrategy
+from rlm_train.spec.models import JudgeMode, JudgeSpec, StudentSpec, TeacherSpec, TeacherStrategy
 from rlm_train.spec.objectives import (
     GramSpec,
     GRPOSpec,
@@ -22,6 +22,7 @@ __all__ = [
     "FeedbackSpec",
     "GRPOSpec",
     "GramSpec",
+    "JudgeMode",
     "JudgeSpec",
     "ObjectivesSpec",
     "RolloutSpec",

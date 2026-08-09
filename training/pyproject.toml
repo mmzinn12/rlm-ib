@@ -14,9 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24.0", "ruff>=0.14", "scipy>=1.15,<2"]
 objectives = ["numpy>=1.26,<3", "torch>=2.4,<2.12"]
+llm-judge = ["openai>=2.14.0"]
 colab = [
     "torch>=2.4,<2.12",
     "transformers==4.57.3",
+    "openai>=2.14.0",
 ]
 
 [project.scripts]

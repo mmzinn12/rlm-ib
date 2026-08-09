@@ -1444,6 +1444,7 @@ dependencies = [
 
 [package.optional-dependencies]
 colab = [
+    { name = "openai" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -1458,10 +1459,15 @@ objectives = [
     { name = "numpy" },
     { name = "torch" },
 ]
+llm-judge = [
+    { name = "openai" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", marker = "extra == 'objectives'", specifier = ">=1.26,<3" },
+    { name = "openai", marker = "extra == 'colab'", specifier = ">=2.14.0" },
+    { name = "openai", marker = "extra == 'llm-judge'", specifier = ">=2.14.0" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
@@ -1472,7 +1478,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'objectives'", specifier = ">=2.4,<2.12" },
     { name = "transformers", marker = "extra == 'colab'", specifier = "==4.57.3" },
 ]
-provides-extras = ["dev", "objectives", "colab"]
+provides-extras = ["dev", "objectives", "llm-judge", "colab"]
 
 [[package]]
 name = "rlms"

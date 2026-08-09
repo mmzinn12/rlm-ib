@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm_train.artifacts.provenance import RunProvenance
+from rlm_train.judge.cache import JudgeCache
+from rlm_train.judge.protocol import Judge
+from rlm_train.judge.providers import build_judge
 from rlm_train.spec import RunSpec
 
 FACTORY_VERSION = "rlm-train-factory-v1"
@@ -63,4 +66,23 @@ class ComponentFactory:
         )
 
 
-__all__ = ["ComponentFactory", "FACTORY_VERSION", "ResolvedComponents"]
+def register_judge_builder(
+    factory: ComponentFactory,
+    *,
+    client: Any | None = None,
+    cache: JudgeCache | None = None,
+) -> None:
+    """Register RunSpec-driven judge construction on the runtime factory."""
+
+    def builder(run: RunSpec) -> Judge:
+        return build_judge(run.judge, client=client, cache=cache)
+
+    factory.register("judge", builder)
+
+
+__all__ = [
+    "ComponentFactory",
+    "FACTORY_VERSION",
+    "ResolvedComponents",
+    "register_judge_builder",
+]
