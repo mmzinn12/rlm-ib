@@ -17,7 +17,11 @@ def train(
     verbose: bool = False,
 ) -> Any:
     spec = run if isinstance(run, RunSpec) else RunSpec.from_file(run)
-    resolver = factory or ComponentFactory()
+    if factory is None:
+        from rlm_train.runtime.assembly import assemble_default_factory
+
+        factory = assemble_default_factory(spec)
+    resolver = factory
     resolved = resolver.resolve(spec, overrides=components)
     if resolved.trainer is None:
         raise ValueError("runtime factory did not resolve a trainer")

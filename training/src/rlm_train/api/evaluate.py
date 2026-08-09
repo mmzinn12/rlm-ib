@@ -16,7 +16,12 @@ def evaluate(
     components: ResolvedComponents | None = None,
 ) -> Any:
     spec = run if isinstance(run, RunSpec) else RunSpec.from_file(run)
-    resolver = factory or ComponentFactory()
+    if factory is None:
+        from rlm_train.evaluation.scorers import build_scorer
+        from rlm_train.runtime.assembly import assemble_default_factory
+
+        factory = assemble_default_factory(spec, scorer=build_scorer("exact_match"))
+    resolver = factory
     resolved = resolver.resolve(spec, overrides=components)
     if resolved.evaluator is None:
         raise ValueError("runtime factory did not resolve an evaluator")
