@@ -7,9 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm_train.artifacts.provenance import RunProvenance
+from rlm_train.datasets.protocol import Dataset
+from rlm_train.evaluation.evaluator import RecursiveEvaluator
+from rlm_train.evaluation.scoring import Scorer
 from rlm_train.judge.cache import JudgeCache
 from rlm_train.judge.protocol import Judge
 from rlm_train.judge.providers import build_judge
+from rlm_train.rollouts.protocol import RolloutEngine
 from rlm_train.spec import RunSpec
 
 FACTORY_VERSION = "rlm-train-factory-v1"
@@ -80,9 +84,34 @@ def register_judge_builder(
     factory.register("judge", builder)
 
 
+def register_evaluator_builder(
+    factory: ComponentFactory,
+    *,
+    dataset: Dataset,
+    rollout_engine: RolloutEngine,
+    scorer: Scorer,
+    checkpoint_id: str,
+    base_seed: int = 0,
+) -> None:
+    """Register RunSpec-driven evaluator construction on the runtime factory."""
+
+    def builder(run: RunSpec) -> RecursiveEvaluator:
+        return RecursiveEvaluator(
+            dataset=dataset,
+            rollout_engine=rollout_engine,
+            scorer=scorer,
+            output_directory=run.artifacts.output_directory,
+            checkpoint_id=checkpoint_id,
+            base_seed=base_seed,
+        )
+
+    factory.register("evaluator", builder)
+
+
 __all__ = [
     "ComponentFactory",
     "FACTORY_VERSION",
     "ResolvedComponents",
+    "register_evaluator_builder",
     "register_judge_builder",
 ]
