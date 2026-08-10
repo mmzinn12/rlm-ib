@@ -94,6 +94,10 @@ class MetricSink(Protocol):
     def write(self, observation: MetricObservation) -> None: ...
 
 
+class CheckpointWriter(Protocol):
+    def write(self, state: TrainerState, *, final: bool) -> Path | None: ...
+
+
 @dataclass(frozen=True)
 class RewardBatch:
     rewards: dict[str, float]
@@ -112,6 +116,7 @@ class CanonicalTrainingResult:
     state: TrainerState
     final_loss: float
     rollout_artifacts: tuple[str, ...] = ()
+    checkpoint_artifacts: tuple[str, ...] = ()
 
 
 class CanonicalTrainer:
@@ -138,6 +143,8 @@ class CanonicalTrainer:
         metric_sink: MetricSink | None = None,
         precision_context: Callable[[], AbstractContextManager[Any]] | None = None,
         gradient_scaler: Any | None = None,
+        checkpoint_writer: CheckpointWriter | None = None,
+        initial_state: TrainerState | None = None,
         verbose: bool = False,
     ) -> None:
         self.spec = spec
@@ -158,6 +165,8 @@ class CanonicalTrainer:
         self.metric_sink = metric_sink
         self.precision_context = precision_context or nullcontext
         self.gradient_scaler = gradient_scaler
+        self.checkpoint_writer = checkpoint_writer
+        self.initial_state = initial_state
         self.verbose = verbose
 
     def train(self) -> CanonicalTrainingResult:
@@ -169,10 +178,17 @@ class CanonicalTrainer:
             raise ValueError("training dataset is empty")
 
         runtime = self.spec.runtime
-        state = TrainerState(run_spec_fingerprint=self.spec.fingerprint)
+        state = self.initial_state or TrainerState(run_spec_fingerprint=self.spec.fingerprint)
+        if state.run_spec_fingerprint != self.spec.fingerprint:
+            raise ValueError("initial trainer state does not match the RunSpec fingerprint")
+        if state.optimizer_step >= runtime.max_optimizer_steps:
+            raise ValueError(
+                "checkpoint has already reached the configured maximum optimizer steps"
+            )
         artifact_paths: list[str] = []
+        checkpoint_paths: list[str] = []
         final_loss = 0.0
-        record_index = 0
+        record_index = state.examples_seen
 
         self._verbose_print(
             "starting training: "
@@ -181,7 +197,7 @@ class CanonicalTrainer:
             f"gradient_accumulation_steps={runtime.gradient_accumulation_steps}"
         )
 
-        for optimizer_step in range(1, runtime.max_optimizer_steps + 1):
+        for optimizer_step in range(state.optimizer_step + 1, runtime.max_optimizer_steps + 1):
             self._verbose_print(
                 f"optimizer step {optimizer_step}/{runtime.max_optimizer_steps} started"
             )
@@ -253,6 +269,13 @@ class CanonicalTrainer:
                 run_spec_fingerprint=self.spec.fingerprint,
             )
             self._record_metrics(optimizer_step, final_loss, gradient_norm)
+            if self.checkpoint_writer is not None:
+                checkpoint = self.checkpoint_writer.write(
+                    state,
+                    final=optimizer_step == runtime.max_optimizer_steps,
+                )
+                if checkpoint is not None:
+                    checkpoint_paths.append(str(checkpoint))
             self._verbose_print(
                 f"optimizer step {optimizer_step}/{runtime.max_optimizer_steps} complete: "
                 f"loss={final_loss:.6f} gradient_norm={gradient_norm:.6f} "
@@ -263,6 +286,7 @@ class CanonicalTrainer:
             state=state,
             final_loss=final_loss,
             rollout_artifacts=tuple(artifact_paths),
+            checkpoint_artifacts=tuple(checkpoint_paths),
         )
         self._verbose_print(
             f"training complete: final_loss={result.final_loss:.6f} "
@@ -527,6 +551,7 @@ def _finite_scalar(value: Any, name: str) -> float:
 __all__ = [
     "CanonicalTrainer",
     "CanonicalTrainingResult",
+    "CheckpointWriter",
     "FeedbackProvider",
     "PolicyScoreBatch",
     "PolicyScoreProvider",

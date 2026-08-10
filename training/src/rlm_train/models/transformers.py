@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from rlm_train.models.identity import PolicyIdentity, TokenizerIdentity
@@ -99,6 +100,11 @@ class TransformersPolicy(TransformersCompletionAdapter):
     def tokenize(self, text: str) -> tuple[int, ...]:
         encoded = self.generator.tokenizer.encode(text, add_special_tokens=False)
         return tuple(int(token_id) for token_id in encoded)
+
+    def save_pretrained(self, destination: str | Path) -> None:
+        """Save model and tokenizer files loadable by the Transformers builders."""
+        self.generator.model.save_pretrained(destination)
+        self.generator.tokenizer.save_pretrained(destination)
 
 
 __all__ = [

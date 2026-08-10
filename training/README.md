@@ -139,6 +139,16 @@ registers component builders on `ComponentFactory` or injects resolved component
 fully resolved specification and component identities are written before the first
 rollout.
 
+Fresh training runs require an empty output directory and always write a final Transformers
+checkpoint under `checkpoints/`. Configure `artifacts.checkpoint_interval` and
+`artifacts.retain_checkpoints` for periodic retention. Resume and evaluate explicitly from a
+saved checkpoint:
+
+```bash
+rlm-train run.json --resume-from outputs/run/checkpoints/step-00000025
+rlm-evaluate run.json --checkpoint outputs/run/checkpoints/step-00000400
+```
+
 ## Environment examples
 
 `environments/oolong/` preserves the original OOLONG synthetic long-context dataset,

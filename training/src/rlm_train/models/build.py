@@ -9,6 +9,7 @@ the concrete Transformers implementation.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from rlm_train.models.identity import PolicyIdentity, TokenizerIdentity
@@ -26,6 +27,7 @@ def build_transformers_policy(
     runtime: RuntimeSpec,
     checkpoint_id: str = "latest",
     generation: GenerationConfig | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> TransformersPolicy:
     """Load a Hugging Face causal LM and tokenizer into a trainable TransformersPolicy.
 
@@ -48,19 +50,24 @@ def build_transformers_policy(
         raise RuntimeError("transformers and torch are required to load a student policy") from exc
 
     dtype = getattr(torch, _DTYPES.get(runtime.precision, "float32"))
-    tokenizer_id = student.tokenizer_id or student.model_id
+    model_source = str(checkpoint_path) if checkpoint_path is not None else student.model_id
+    tokenizer_id = (
+        str(checkpoint_path)
+        if checkpoint_path is not None
+        else student.tokenizer_id or student.model_id
+    )
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_id,
-        revision=student.tokenizer_revision,
+        revision=None if checkpoint_path is not None else student.tokenizer_revision,
         trust_remote_code=student.trust_remote_code,
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model: Any = AutoModelForCausalLM.from_pretrained(
-        student.model_id,
-        revision=student.revision,
+        model_source,
+        revision=None if checkpoint_path is not None else student.revision,
         trust_remote_code=student.trust_remote_code,
-        torch_dtype=dtype,
+        dtype=dtype,
     )
     if torch.cuda.is_available():
         model = model.to("cuda")
@@ -86,7 +93,9 @@ def build_transformers_policy(
         component_id=student.model_id,
         revision=student.revision or "default",
         policy_owner=student.resolved_policy_owner,
-        checkpoint_id=checkpoint_id,
+        checkpoint_id=(
+            Path(checkpoint_path).name if checkpoint_path is not None else checkpoint_id
+        ),
     )
     tokenizer_identity = TokenizerIdentity(
         component_id=tokenizer_id,
@@ -102,7 +111,11 @@ def build_transformers_policy(
 
 
 def build_policy(
-    student: StudentSpec, *, runtime: RuntimeSpec, checkpoint_id: str = "latest"
+    student: StudentSpec,
+    *,
+    runtime: RuntimeSpec,
+    checkpoint_id: str = "latest",
+    checkpoint_path: str | Path | None = None,
 ) -> TransformersPolicy:
     """Build a trainable policy by dispatching on the student adapter.
 
@@ -118,7 +131,12 @@ def build_policy(
         NotImplementedError: If ``student.adapter`` has no wired builder.
     """
     if student.adapter == "transformers":
-        return build_transformers_policy(student, runtime=runtime, checkpoint_id=checkpoint_id)
+        return build_transformers_policy(
+            student,
+            runtime=runtime,
+            checkpoint_id=checkpoint_id,
+            checkpoint_path=checkpoint_path,
+        )
     raise NotImplementedError(f"policy adapter {student.adapter!r} is not wired yet")
 
 

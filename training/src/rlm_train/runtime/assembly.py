@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
+from pathlib import Path
 from typing import Any
 
 from rlm_train.datasets.build import build_dataset
@@ -105,7 +106,13 @@ def precision_context_factory(precision: str) -> Callable[[], AbstractContextMan
     return factory
 
 
-def build_canonical_trainer(run: RunSpec, *, policy: Any, judge: Any) -> Any:
+def build_canonical_trainer(
+    run: RunSpec,
+    *,
+    policy: Any,
+    judge: Any,
+    resume_checkpoint: str | Path | None = None,
+) -> Any:
     """Assemble a runnable CanonicalTrainer by composing the per-package build entry points.
 
     Args:
@@ -121,6 +128,7 @@ def build_canonical_trainer(run: RunSpec, *, policy: Any, judge: Any) -> Any:
         ValueError: If ``run.training_dataset`` is not set.
     """
     from rlm_train.artifacts.build import build_artifact_writer
+    from rlm_train.artifacts.checkpoints import TransformersCheckpointWriter
     from rlm_train.engine.optimizer import build_optimizer
     from rlm_train.engine.providers import build_feedback_provider, build_policy_score_provider
     from rlm_train.engine.scheduler import build_training_scheduler
@@ -133,15 +141,30 @@ def build_canonical_trainer(run: RunSpec, *, policy: Any, judge: Any) -> Any:
         raise ValueError("training_dataset must be set to build a trainer")
     parameters = list(policy.trainable_parameters())
     optimizer = build_optimizer(parameters, run.runtime)
+    scheduler = build_training_scheduler(
+        optimizer, run.runtime, total_steps=run.runtime.max_optimizer_steps
+    )
+    checkpoint_writer = TransformersCheckpointWriter(
+        run.artifacts.output_directory,
+        policy=policy,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        checkpoint_interval=run.artifacts.checkpoint_interval,
+        retain_checkpoints=run.artifacts.retain_checkpoints,
+    )
+    initial_state = None
+    if resume_checkpoint is not None:
+        initial_state = checkpoint_writer.restore_training_state(
+            resume_checkpoint,
+            run_spec_fingerprint=run.fingerprint,
+        )
     return CanonicalTrainer(
         spec=run,
         dataset=build_dataset(run.training_dataset),
         rollout_engine=build_rollout_engine(run, policy=policy),
         objectives=build_objective_composer(run.objectives),
         optimizer=optimizer,
-        scheduler=build_training_scheduler(
-            optimizer, run.runtime, total_steps=run.runtime.max_optimizer_steps
-        ),
+        scheduler=scheduler,
         policy_scores=build_policy_score_provider(policy),
         policy_owner=run.student.resolved_policy_owner,
         policy_parameters=parameters,
@@ -153,11 +176,19 @@ def build_canonical_trainer(run: RunSpec, *, policy: Any, judge: Any) -> Any:
         artifact_writer=build_artifact_writer(run.artifacts.output_directory),
         metric_sink=build_metric_sink(run.artifacts.output_directory),
         precision_context=precision_context_factory(run.runtime.precision),
+        checkpoint_writer=checkpoint_writer,
+        initial_state=initial_state,
         verbose=True,
     )
 
 
-def assemble_default_factory(spec: RunSpec, *, scorer: Scorer | None = None) -> ComponentFactory:
+def assemble_default_factory(
+    spec: RunSpec,
+    *,
+    scorer: Scorer | None = None,
+    checkpoint_path: str | Path | None = None,
+    resume_training: bool = False,
+) -> ComponentFactory:
     """Load one shared policy and judge, then register all pipeline builders on a factory.
 
     Args:
@@ -173,7 +204,11 @@ def assemble_default_factory(spec: RunSpec, *, scorer: Scorer | None = None) -> 
     from rlm_train.models.build import build_policy
 
     factory = ComponentFactory()
-    policy = build_policy(spec.student, runtime=spec.runtime)
+    policy = build_policy(
+        spec.student,
+        runtime=spec.runtime,
+        checkpoint_path=checkpoint_path,
+    )
     judge = build_judge(spec.judge)
 
     factory.register("policy", lambda run: policy)
@@ -181,11 +216,25 @@ def assemble_default_factory(spec: RunSpec, *, scorer: Scorer | None = None) -> 
     factory.register("dataset", lambda run: build_dataset(run.training_dataset))
     factory.register("rollout_engine", lambda run: build_rollout_engine(run, policy=policy))
     factory.register(
-        "trainer", lambda run: build_canonical_trainer(run, policy=policy, judge=judge)
+        "trainer",
+        lambda run: build_canonical_trainer(
+            run,
+            policy=policy,
+            judge=judge,
+            resume_checkpoint=checkpoint_path if resume_training else None,
+        ),
     )
     if scorer is not None:
         factory.register(
-            "evaluator", lambda run: build_evaluator(run, policy=policy, scorer=scorer)
+            "evaluator",
+            lambda run: build_evaluator(
+                run,
+                policy=policy,
+                scorer=scorer,
+                checkpoint_id=(
+                    Path(checkpoint_path).name if checkpoint_path is not None else "base"
+                ),
+            ),
         )
     return factory
 
