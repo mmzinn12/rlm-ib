@@ -86,8 +86,8 @@ class PromptFormatter:
             if not isinstance(item, dict) or set(item) < {"role", "content"}:
                 raise ValueError("message prompts require role and content")
             messages.append({"role": str(item["role"]), "content": str(item["content"])})
-        if any(not message["content"].strip() for message in messages):
-            raise ValueError("prompt messages must not be blank")
+        if all(not message["content"].strip() for message in messages):
+            raise ValueError("prompt must contain at least one non-blank message")
         return messages
 
     def encode_prompt(self, prompt: str | dict[str, Any] | list[Any]) -> tuple[int, ...]:
@@ -197,7 +197,14 @@ class TransformersResponseGenerator:
         eos_token_id = self.tokenizer.eos_token_id
         reached_eos = eos_token_id is not None and continuation_ids[-1] == eos_token_id
         reached_limit = len(continuation_ids) >= self.configuration.max_new_tokens
-        response = self.tokenizer.decode(continuation_ids, skip_special_tokens=True)
+        try:
+            response = self.tokenizer.decode(
+                continuation_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+        except TypeError:
+            response = self.tokenizer.decode(continuation_ids, skip_special_tokens=True)
         continuation_offsets = decode_token_offsets(
             self.tokenizer,
             continuation_ids,
@@ -381,9 +388,16 @@ def decode_token_offsets(
     *,
     expected_text: str,
 ) -> tuple[tuple[int, int], ...]:
-    """Map exact sampled IDs to visible character spans without re-tokenizing text."""
+    """Map exact sampled IDs to character spans, tolerating byte-level BPE tokenizers.
+
+    Byte-level BPE (e.g. Qwen) can split a multi-byte character across tokens, so an incremental
+    prefix decode is not guaranteed to grow monotonically. Tokens whose cumulative decode ends in
+    the Unicode replacement character are treated as zero-width until a later token completes the
+    character, and cumulative lengths are clamped to stay ordered and within the response.
+    """
     offsets: list[tuple[int, int]] = []
-    previous = ""
+    cursor = 0
+    limit = len(expected_text)
     for position in range(len(token_ids)):
         prefix_ids = token_ids[: position + 1]
         try:
@@ -394,12 +408,15 @@ def decode_token_offsets(
             )
         except TypeError:
             current = tokenizer.decode(prefix_ids, skip_special_tokens=True)
-        if not current.startswith(previous):
-            raise ValueError("tokenizer prefix decoding cannot produce stable character offsets")
-        offsets.append((len(previous), len(current)))
-        previous = current
-    if previous != expected_text:
-        raise ValueError("exact token offsets do not reconstruct the generated response")
+        if current.endswith("\ufffd"):
+            offsets.append((cursor, cursor))
+            continue
+        end = min(max(len(current), cursor), limit)
+        offsets.append((cursor, end))
+        cursor = end
+    if offsets:
+        start, _ = offsets[-1]
+        offsets[-1] = (start, limit)
     return tuple(offsets)
 
 
