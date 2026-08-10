@@ -33,6 +33,8 @@ class CurrentPolicyTeacher:
         if not positions:
             raise ValueError("teacher target requires a non-empty objective selection")
         score = self.policy.score_sampled_ids(generation, require_grad=False)
+        if score.logprobs is None:
+            raise ValueError("current-policy teacher requires sampled-token log probabilities")
         selected_ids = tuple(generation.token_ids[position] for position in positions)
         selected_logprobs = score.logprobs[list(positions)]
         config_json = json.dumps(self.configuration, sort_keys=True, separators=(",", ":"))

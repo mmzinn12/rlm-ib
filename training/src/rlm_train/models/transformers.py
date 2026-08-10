@@ -72,16 +72,15 @@ class TransformersPolicy(TransformersCompletionAdapter):
         *,
         require_grad: bool,
         return_logits: bool = False,
+        return_logprobs: bool = True,
+        positions: tuple[int, ...] | None = None,
         capture_hidden_states: bool = False,
     ) -> PolicyScore:
         if capture_hidden_states:
             raise NotImplementedError("hidden-state capture is configured by the Gram adapter")
-        logprobs = continuation_logprobs(
-            self.generator.model,
-            prompt_token_ids=generation.prompt_token_ids,
-            continuation_token_ids=generation.token_ids,
-            require_grad=require_grad,
-        )
+        if not return_logits and not return_logprobs:
+            raise ValueError("policy scoring must request logits, logprobs, or both")
+        logprobs = None
         logits = None
         if return_logits:
             logits = score_continuation_logits(
@@ -89,6 +88,17 @@ class TransformersPolicy(TransformersCompletionAdapter):
                 prompt_token_ids=generation.prompt_token_ids,
                 continuation_token_ids=generation.token_ids,
                 require_grad=require_grad,
+                positions=positions,
+            )
+            if return_logprobs:
+                logprobs = _gather_logprobs(logits, generation.token_ids, positions)
+        elif return_logprobs:
+            logprobs = continuation_logprobs(
+                self.generator.model,
+                prompt_token_ids=generation.prompt_token_ids,
+                continuation_token_ids=generation.token_ids,
+                require_grad=require_grad,
+                positions=positions,
             )
         return PolicyScore(token_ids=generation.token_ids, logprobs=logprobs, logits=logits)
 
@@ -105,6 +115,23 @@ class TransformersPolicy(TransformersCompletionAdapter):
         """Save model and tokenizer files loadable by the Transformers builders."""
         self.generator.model.save_pretrained(destination)
         self.generator.tokenizer.save_pretrained(destination)
+
+
+def _gather_logprobs(
+    logits: Any,
+    continuation_token_ids: tuple[int, ...],
+    positions: tuple[int, ...] | None,
+) -> Any:
+    torch = __import__("torch")
+    selected_positions = positions or tuple(range(len(continuation_token_ids)))
+    targets = torch.tensor(
+        [continuation_token_ids[position] for position in selected_positions],
+        dtype=torch.long,
+        device=logits.device,
+    )
+    return (
+        torch.log_softmax(logits.float(), dim=-1).gather(dim=-1, index=targets[:, None]).squeeze(-1)
+    )
 
 
 __all__ = [

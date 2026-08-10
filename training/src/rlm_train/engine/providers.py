@@ -101,7 +101,6 @@ class TransformersPolicyScoreProvider:
         Raises:
             ValueError: If the policy does not return logits.
         """
-        torch = __import__("torch")
         scores: dict[str, object] = {}
         for rollout in rollouts:
             selection = selections[rollout.rollout_id].durable
@@ -109,12 +108,15 @@ class TransformersPolicyScoreProvider:
             positions = selected_positions(selection)
             sampled = reconstruct_generation(rollout, generation_id, self.policy)
             policy_score = self.policy.score_sampled_ids(
-                sampled, require_grad=True, return_logits=True
+                sampled,
+                require_grad=True,
+                return_logits=True,
+                return_logprobs=False,
+                positions=positions,
             )
             if policy_score.logits is None:
                 raise ValueError("policy must return logits for SDPO scoring")
-            index = torch.tensor(positions, dtype=torch.long, device=policy_score.logits.device)
-            scores[rollout.rollout_id] = policy_score.logits.index_select(0, index)
+            scores[rollout.rollout_id] = policy_score.logits
         return PolicyScoreBatch(policy_scores=scores)
 
 
@@ -133,7 +135,6 @@ class SelfDistillationTeacherTargetProvider:
         selections: dict[str, TokenSelectionResult],
         feedback: FeedbackBundle,
     ) -> dict[str, TeacherTarget]:
-        torch = __import__("torch")
         projections = feedback.projections
         configuration_fingerprint = hashlib.sha256(
             json.dumps(
@@ -158,14 +159,17 @@ class SelfDistillationTeacherTargetProvider:
             if conditioning:
                 prefix = tuple(self.policy.tokenize(conditioning + "\n"))
                 if prefix:
-                    sampled = replace(
-                        sampled, prompt_token_ids=prefix + sampled.prompt_token_ids
-                    )
+                    sampled = replace(sampled, prompt_token_ids=prefix + sampled.prompt_token_ids)
             policy_score = self.policy.score_sampled_ids(
-                sampled, require_grad=False, return_logits=True
+                sampled,
+                require_grad=False,
+                return_logits=True,
+                return_logprobs=False,
+                positions=positions,
             )
-            index = torch.tensor(positions, dtype=torch.long, device=policy_score.logits.device)
-            teacher_logits = policy_score.logits.index_select(0, index)
+            if policy_score.logits is None:
+                raise ValueError("policy must return logits for SDPO teacher targets")
+            teacher_logits = policy_score.logits
             topk = extract_topk_teacher_target(
                 teacher_logits,
                 top_k=self.top_k,

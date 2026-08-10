@@ -40,7 +40,7 @@ class SampledGeneration:
 @dataclass(frozen=True)
 class PolicyScore:
     token_ids: tuple[int, ...]
-    logprobs: Any
+    logprobs: Any | None = None
     logits: Any | None = None
     hidden_states: Any | None = None
 
@@ -60,6 +60,8 @@ class TrainablePolicy(Protocol):
         *,
         require_grad: bool,
         return_logits: bool = False,
+        return_logprobs: bool = True,
+        positions: tuple[int, ...] | None = None,
         capture_hidden_states: bool = False,
     ) -> PolicyScore: ...
 

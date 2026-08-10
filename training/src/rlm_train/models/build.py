@@ -69,6 +69,8 @@ def build_transformers_policy(
         trust_remote_code=student.trust_remote_code,
         dtype=dtype,
     )
+    if student.trainable:
+        model.gradient_checkpointing_enable()
     if torch.cuda.is_available():
         model = model.to("cuda")
     context_length = student.generation.model_context_length or int(

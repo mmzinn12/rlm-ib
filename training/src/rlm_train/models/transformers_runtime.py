@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import threading
 from dataclasses import dataclass
@@ -337,6 +338,7 @@ def continuation_logprobs(
     prompt_token_ids: tuple[int, ...],
     continuation_token_ids: tuple[int, ...],
     require_grad: bool,
+    positions: tuple[int, ...] | None = None,
 ) -> Any:
     """Score exact continuation IDs under a causal model with prompt tokens masked."""
     torch = _torch()
@@ -347,9 +349,11 @@ def continuation_logprobs(
         prompt_token_ids=prompt_token_ids,
         continuation_token_ids=continuation_token_ids,
         require_grad=require_grad,
+        positions=positions,
     )
+    selected_positions = positions or tuple(range(len(continuation_token_ids)))
     targets = torch.tensor(
-        continuation_token_ids,
+        [continuation_token_ids[position] for position in selected_positions],
         dtype=torch.long,
         device=continuation_logits.device,
     )
@@ -364,6 +368,7 @@ def score_continuation_logits(
     prompt_token_ids: tuple[int, ...],
     continuation_token_ids: tuple[int, ...],
     require_grad: bool,
+    positions: tuple[int, ...] | None = None,
 ) -> Any:
     """Return full-vocabulary logits aligned to exact sampled continuation IDs."""
     torch = _torch()
@@ -373,15 +378,45 @@ def score_continuation_logits(
     complete = (*prompt_token_ids, *continuation_token_ids)
     input_ids = torch.tensor([complete], dtype=torch.long, device=device)
     attention_mask = torch.ones_like(input_ids)
+    selected_positions = positions or tuple(range(len(continuation_token_ids)))
+    if not selected_positions or len(set(selected_positions)) != len(selected_positions):
+        raise ValueError("logit scoring positions must be non-empty and unique")
+    if any(
+        position < 0 or position >= len(continuation_token_ids) for position in selected_positions
+    ):
+        raise ValueError("logit scoring position is outside the continuation")
+    prediction_positions = torch.tensor(
+        [len(prompt_token_ids) - 1 + position for position in selected_positions],
+        dtype=torch.long,
+        device=device,
+    )
+    supports_selective_logits = "logits_to_keep" in inspect.signature(model.forward).parameters
+    model_arguments: dict[str, Any] = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "use_cache": False,
+    }
+    if supports_selective_logits:
+        model_arguments["logits_to_keep"] = prediction_positions
     context = torch.enable_grad() if require_grad else torch.no_grad()
-    with context:
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        logits = outputs.logits
-        if logits.ndim != 3 or logits.shape[:2] != input_ids.shape:
-            raise ValueError("causal model logits must align with input IDs")
-        start = len(prompt_token_ids) - 1
-        stop = start + len(continuation_token_ids)
-        continuation_logits = logits[0, start:stop, :]
+    was_training = bool(model.training)
+    model.train(require_grad)
+    try:
+        with context:
+            outputs = model(**model_arguments)
+            logits = outputs.logits
+            if logits.ndim != 3 or logits.shape[0] != 1:
+                raise ValueError("causal model logits must have shape [1, tokens, vocabulary]")
+            if supports_selective_logits:
+                if logits.shape[1] != len(selected_positions):
+                    raise ValueError("selective causal model logits do not align with positions")
+                continuation_logits = logits[0]
+            else:
+                if logits.shape[:2] != input_ids.shape:
+                    raise ValueError("causal model logits must align with input IDs")
+                continuation_logits = logits[0].index_select(0, prediction_positions)
+    finally:
+        model.train(was_training)
     return continuation_logits if require_grad else continuation_logits.detach()
 
 
