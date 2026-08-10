@@ -68,27 +68,29 @@ class PromptFormatter:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
-    def messages(self, prompt: str | dict[str, Any]) -> list[dict[str, str]]:
-        """Normalize a public string or message payload without verifier target data."""
+    def messages(self, prompt: str | dict[str, Any] | list[Any]) -> list[dict[str, str]]:
+        """Normalize a string, a message list, or a message mapping into role/content dicts."""
         if isinstance(prompt, str):
-            user_content = prompt
-            messages = [
+            items: list[Any] = [
                 {"role": "system", "content": self.configuration.system_prompt},
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": prompt},
             ]
+        elif isinstance(prompt, list):
+            items = prompt
         elif isinstance(prompt, dict) and isinstance(prompt.get("messages"), list):
-            messages = []
-            for item in prompt["messages"]:
-                if not isinstance(item, dict) or set(item) < {"role", "content"}:
-                    raise ValueError("message prompts require role and content")
-                messages.append({"role": str(item["role"]), "content": str(item["content"])})
+            items = prompt["messages"]
         else:
-            raise TypeError("prompt must be text or a mapping containing messages")
+            raise TypeError("prompt must be text, a message list, or a mapping with messages")
+        messages = []
+        for item in items:
+            if not isinstance(item, dict) or set(item) < {"role", "content"}:
+                raise ValueError("message prompts require role and content")
+            messages.append({"role": str(item["role"]), "content": str(item["content"])})
         if any(not message["content"].strip() for message in messages):
             raise ValueError("prompt messages must not be blank")
         return messages
 
-    def encode_prompt(self, prompt: str | dict[str, Any]) -> tuple[int, ...]:
+    def encode_prompt(self, prompt: str | dict[str, Any] | list[Any]) -> tuple[int, ...]:
         """Tokenize through the shared versioned chat policy."""
         messages = self.messages(prompt)
         if self.configuration.use_chat_template:
@@ -136,7 +138,7 @@ class TransformersResponseGenerator:
 
     def generate_tokenized(
         self,
-        prompt: str | dict[str, Any],
+        prompt: str | dict[str, Any] | list[Any],
         *,
         seed: int,
         sample_index: int = 0,
@@ -250,7 +252,7 @@ class TransformersCompletionAdapter(BaseLM):
     def policy_owner(self) -> str:
         return f"student:{self.model_name}"
 
-    def completion(self, prompt: str | dict[str, Any]) -> str:
+    def completion(self, prompt: str | dict[str, Any] | list[Any]) -> str:
         """Generate and record one root or explicitly scoped subcall."""
         result = self.generate_completion(prompt)
         return result.response
@@ -272,7 +274,9 @@ class TransformersCompletionAdapter(BaseLM):
             "policy_owner": self.policy_owner,
         }
 
-    def generate_completion(self, prompt: str | dict[str, Any]) -> TokenGenerationResult:
+    def generate_completion(
+        self, prompt: str | dict[str, Any] | list[Any]
+    ) -> TokenGenerationResult:
         """Generate one serialized model completion and retain exact metadata."""
         with self._generation_lock:
             seed = derive_group_seed(self.base_seed, str(prompt), self._call_count)
