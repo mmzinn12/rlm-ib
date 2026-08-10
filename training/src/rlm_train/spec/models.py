@@ -13,6 +13,28 @@ class ImmutableSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class GenerationSpec(ImmutableSpec):
+    """Prompt-length and sampling settings for the student's text generation.
+
+    Attributes:
+        max_prompt_tokens: Max tokens allowed in a formatted prompt before generation.
+        max_new_tokens: Max tokens sampled per generation.
+        temperature: Sampling temperature (used when ``do_sample``).
+        top_p: Nucleus-sampling probability mass (used when ``do_sample``).
+        do_sample: Sample when ``True``; greedy decode when ``False``.
+        use_chat_template: Format prompts with the tokenizer's chat template.
+        allow_prompt_truncation: Truncate over-long prompts instead of raising.
+    """
+
+    max_prompt_tokens: int = Field(default=512, gt=0)
+    max_new_tokens: int = Field(default=128, gt=0)
+    temperature: float = Field(default=0.8, gt=0.0)
+    top_p: float = Field(default=0.95, gt=0.0, le=1.0)
+    do_sample: bool = True
+    use_chat_template: bool = True
+    allow_prompt_truncation: bool = False
+
+
 class StudentSpec(ImmutableSpec):
     adapter: str = Field(default="transformers", min_length=1)
     model_id: str = Field(min_length=1)
@@ -23,6 +45,7 @@ class StudentSpec(ImmutableSpec):
     policy_owner: str | None = None
     adapter_id: str | None = None
     trust_remote_code: bool = False
+    generation: GenerationSpec = Field(default_factory=GenerationSpec)
 
     @property
     def resolved_policy_owner(self) -> str:
@@ -84,6 +107,7 @@ class TeacherSpec(ImmutableSpec):
 
 
 __all__ = [
+    "GenerationSpec",
     "ImmutableSpec",
     "JudgeMode",
     "JudgeSpec",

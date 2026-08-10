@@ -65,10 +65,19 @@ def build_transformers_policy(
     if torch.cuda.is_available():
         model = model.to("cuda")
     context_length = int(getattr(model.config, "max_position_embeddings", 0) or 4096)
+    generation_config = generation or GenerationConfig(
+        max_prompt_tokens=student.generation.max_prompt_tokens,
+        max_new_tokens=student.generation.max_new_tokens,
+        temperature=student.generation.temperature,
+        top_p=student.generation.top_p,
+        do_sample=student.generation.do_sample,
+        use_chat_template=student.generation.use_chat_template,
+        allow_prompt_truncation=student.generation.allow_prompt_truncation,
+    )
     generator = TransformersResponseGenerator(
         model,
         tokenizer,
-        generation or GenerationConfig(),
+        generation_config,
         model_context_length=context_length,
     )
     identity = PolicyIdentity(
