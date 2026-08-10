@@ -92,10 +92,23 @@ class FeedbackBundle(ImmutableFeedback):
         return self
 
 
+class RubricFeedback(ImmutableFeedback):
+    """Rich, qualitative feedback the judge fills for a helper question (not a scalar reward)."""
+
+    information_revealed: tuple[str, ...]
+    what_was_missing: str
+    redundant_with_context: bool
+    misleading_or_invalid: bool
+    why_it_mattered: str
+    improved_question_guidance: str
+    rationale: str
+
+
 __all__ = [
     "EnvironmentFeedback",
     "FeedbackBundle",
     "FeedbackProjection",
+    "RubricFeedback",
     "FeedbackVisibility",
     "ScopedAssessment",
 ]

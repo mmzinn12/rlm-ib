@@ -142,7 +142,13 @@ class OpenAIJudge:
                 "[-1, 1]. novelty, uncertainty_reduction, and evidence_quality must each be "
                 "in [0, 1]. Do not use a 1-to-5 or 1-to-10 rating scale."
             )
-        return build_judge_instructions(contract)
+        rubric = (
+            " Also fill the rubric with rich qualitative feedback: what information the question "
+            "revealed, what was missing, whether it was redundant or misleading, why it mattered, "
+            "and concrete guidance for a sharper question. The rubric is the primary output; the "
+            "labels/scores are secondary metadata."
+        )
+        return build_judge_instructions(contract + rubric)
 
     def build_assessment(
         self,

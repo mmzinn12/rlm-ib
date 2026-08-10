@@ -63,6 +63,15 @@ def categorical_payload() -> str:
             "misleading": False,
             "diagnostic": "The answer resolves the focal ambiguity.",
             "information_revealed": ["The second source contains the distinguishing fact."],
+            "rubric": {
+                "information_revealed": ["The second source contains the distinguishing fact."],
+                "what_was_missing": "The specific publication year.",
+                "redundant_with_context": False,
+                "misleading_or_invalid": False,
+                "why_it_mattered": "It disambiguated the two candidate sources.",
+                "improved_question_guidance": "Name the source and ask for its publication year.",
+                "rationale": "The question narrowed the search but omitted the decisive detail.",
+            },
         }
     )
 
@@ -79,6 +88,15 @@ def full_payload(*, significance: float = 0.75) -> str:
             "diagnostic": "The question retrieved relevant evidence.",
             "information_revealed": ["A relevant fact."],
             "rationale": "The response directly reduced uncertainty.",
+            "rubric": {
+                "information_revealed": ["A relevant fact."],
+                "what_was_missing": "A corroborating second source.",
+                "redundant_with_context": False,
+                "misleading_or_invalid": False,
+                "why_it_mattered": "It reduced uncertainty about the focal claim.",
+                "improved_question_guidance": "Ask for a second independent source.",
+                "rationale": "The response directly reduced uncertainty.",
+            },
         }
     )
 

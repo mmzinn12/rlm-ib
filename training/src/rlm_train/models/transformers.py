@@ -96,6 +96,10 @@ class TransformersPolicy(TransformersCompletionAdapter):
             parameter for parameter in self.generator.model.parameters() if parameter.requires_grad
         )
 
+    def tokenize(self, text: str) -> tuple[int, ...]:
+        encoded = self.generator.tokenizer.encode(text, add_special_tokens=False)
+        return tuple(int(token_id) for token_id in encoded)
+
 
 __all__ = [
     "PromptFormatter",

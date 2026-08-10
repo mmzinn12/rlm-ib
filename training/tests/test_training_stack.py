@@ -24,6 +24,8 @@ from rlm_train.objectives.protocol import ObjectiveBatch
 from rlm_train.objectives.sdpo.loss import build_sdpo_compute_loss
 from rlm_train.objectives.sdpo.target_support import extract_topk_teacher_target
 from rlm_train.rollouts.protocol import RolloutResult
+from rlm_train.rollouts.selectors import select_tokens
+from rlm_train.spec.feedback import AssessmentScope
 from rlm_train.spec.objectives import ObjectivesSpec, SDPOSpec, TokenScope
 from rlm_train.spec.run import DatasetRefSpec, RunSpec, RuntimeSpec
 from rlm_train.spec.artifacts import ArtifactSpec
@@ -42,6 +44,7 @@ from rlm_train.trajectory.schema import (
 
 VOCAB = 8
 TOP_K = 4
+FEEDBACK_MARKER = 4242
 
 
 def test_sdpo_compute_loss_is_positive_and_differentiable_when_teacher_differs():
@@ -114,6 +117,10 @@ class FakePolicy:
         torch = __import__("torch")
         count = len(generation.token_ids)
         logits = self.bias.unsqueeze(0).expand(count, self.bias.shape[0])
+        if FEEDBACK_MARKER in generation.prompt_token_ids:
+            shift = torch.zeros(self.bias.shape[0])
+            shift[0] = 6.0
+            logits = logits + shift
         if not require_grad:
             logits = logits.detach()
         targets = torch.tensor(generation.token_ids, dtype=torch.long)
@@ -123,6 +130,9 @@ class FakePolicy:
             logprobs=logprobs,
             logits=logits if return_logits else None,
         )
+
+    def tokenize(self, text):
+        return (FEEDBACK_MARKER,)
 
     def trainable_parameters(self):
         return (self.bias,)
@@ -237,6 +247,59 @@ def test_full_provider_stack_runs_one_optimizer_step(tmp_path):
     )
     assert saved.teacher_targets
     assert saved.feedback.judge_assessments
+
+
+def test_rubric_feedback_conditions_teacher_and_makes_loss_positive():
+    from rlm_train.objectives.protocol import ObjectiveCapabilities
+
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    rollout = training_rollout()
+    policy = FakePolicy(VOCAB)
+    selections = {
+        rollout.rollout_id: select_tokens(
+            rollout,
+            objective="sdpo",
+            token_scope=TokenScope.ALL_STUDENT_TOKENS,
+            policy_owner="student",
+        )
+    }
+    capabilities = ObjectiveCapabilities(token_scope=TokenScope.ALL_STUDENT_TOKENS)
+    student = TransformersPolicyScoreProvider(policy).score(
+        "sdpo", capabilities, (rollout,), selections
+    )
+    teacher_provider = SelfDistillationTeacherTargetProvider(policy, top_k=TOP_K)
+
+    rubric = {
+        "information_revealed": ["the release year"],
+        "what_was_missing": "the specific film title",
+        "redundant_with_context": False,
+        "misleading_or_invalid": False,
+        "why_it_mattered": "it would disambiguate the two candidates",
+        "improved_question_guidance": "name the film and ask for its director",
+        "rationale": "the question was too broad",
+    }
+    scopes = frozenset({AssessmentScope.RETROSPECTIVE_LOCAL})
+    with_feedback = JudgeFeedbackProvider(
+        DeterministicFakeJudge(content={"rubric": rubric})
+    ).assess(object(), (rollout,), scopes)
+    without_feedback = FeedbackBundle()
+
+    compute_loss = build_sdpo_compute_loss(SDPOSpec(enabled=True, weight=1.0, top_k=TOP_K))
+
+    def loss_for(feedback: FeedbackBundle) -> float:
+        targets = teacher_provider.build("sdpo", (rollout,), selections, feedback)
+        batch = ObjectiveBatch(
+            rollouts=(rollout,),
+            token_selections=selections,
+            policy_scores=student.policy_scores,
+            teacher_targets=targets,
+            feedback=feedback,
+        )
+        return compute_loss(batch).loss.item()
+
+    assert loss_for(with_feedback) > 0.0
+    assert loss_for(without_feedback) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_build_objective_composer_requires_enabled_objective():

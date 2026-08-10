@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rlm_train.feedback.schema import RubricFeedback
+
 
 class FullJudgeAssessment(BaseModel):
     """Rich numeric assessment retained for models that follow bounded schemas."""
@@ -19,6 +21,7 @@ class FullJudgeAssessment(BaseModel):
     diagnostic: str
     information_revealed: tuple[str, ...]
     rationale: str
+    rubric: RubricFeedback
 
     def normalized_content(self) -> dict[str, object]:
         return {"judge_mode": "full", **self.model_dump(mode="json")}

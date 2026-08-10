@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 from rlm_train.engine.trainer import PolicyScoreBatch
-from rlm_train.feedback.schema import FeedbackBundle
+from rlm_train.feedback.schema import FeedbackBundle, ScopedAssessment
 from rlm_train.judge.protocol import Judge
 from rlm_train.judge.views import build_judge_view
 from rlm_train.models.protocol import SampledGeneration, TrainablePolicy
@@ -45,6 +46,25 @@ def reconstruct_generation(
         policy=policy.identity,
         tokenizer=policy.tokenizer_identity,
     )
+
+
+def render_rubric_conditioning(
+    rollout: AnnotatedRollout, node_id: str, assessments: tuple[ScopedAssessment, ...]
+) -> str:
+    """Render the judge's rubric feedback for a node's helper questions into a revision hint."""
+    edge_ids = {edge.edge_id for edge in rollout.execution.edges if edge.parent_id == node_id}
+    lines: list[str] = []
+    for assessment in assessments:
+        if not (set(assessment.focal_edge_ids) & edge_ids):
+            continue
+        rubric = (assessment.content or {}).get("rubric") or {}
+        guidance = str(rubric.get("improved_question_guidance") or "").strip()
+        missing = str(rubric.get("what_was_missing") or "").strip()
+        if guidance or missing:
+            lines.append(f"- ask instead: {guidance} (was missing: {missing})")
+    if not lines:
+        return ""
+    return "Feedback on your previous helper questions — revise them:\n" + "\n".join(lines)
 
 
 class TransformersPolicyScoreProvider:
@@ -125,7 +145,22 @@ class SelfDistillationTeacherTargetProvider:
             selection = selections[rollout.rollout_id].durable
             generation_id = selection.ranges[0].generation_id
             positions = selected_positions(selection)
+            generation_record = next(
+                item
+                for item in rollout.annotations.generations
+                if item.generation_id == generation_id
+            )
             sampled = reconstruct_generation(rollout, generation_id, self.policy)
+            # Condition the teacher on the rubric feedback so it differs from the student.
+            conditioning = render_rubric_conditioning(
+                rollout, generation_record.node_id, feedback.local_assessments
+            )
+            if conditioning:
+                prefix = tuple(self.policy.tokenize(conditioning + "\n"))
+                if prefix:
+                    sampled = replace(
+                        sampled, prompt_token_ids=prefix + sampled.prompt_token_ids
+                    )
             policy_score = self.policy.score_sampled_ids(
                 sampled, require_grad=False, return_logits=True
             )
@@ -222,5 +257,6 @@ __all__ = [
     "build_feedback_provider",
     "build_policy_score_provider",
     "reconstruct_generation",
+    "render_rubric_conditioning",
     "selected_positions",
 ]

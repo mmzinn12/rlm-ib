@@ -6,6 +6,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
+from rlm_train.feedback.schema import RubricFeedback
+
 
 class InformationSignificance(StrEnum):
     HARMFUL = "harmful"
@@ -41,6 +43,7 @@ class CategoricalJudgeAssessment(BaseModel):
     misleading: bool
     diagnostic: str
     information_revealed: tuple[str, ...]
+    rubric: RubricFeedback
 
     def normalized_content(self) -> dict[str, object]:
         """Return categories alongside stable bounded values consumed downstream."""
@@ -73,6 +76,7 @@ class CategoricalJudgeAssessment(BaseModel):
             "misleading": self.misleading,
             "diagnostic": self.diagnostic,
             "information_revealed": list(self.information_revealed),
+            "rubric": self.rubric.model_dump(mode="json"),
         }
 
 
