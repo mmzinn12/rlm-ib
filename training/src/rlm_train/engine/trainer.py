@@ -188,17 +188,31 @@ class CanonicalTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             accumulated_loss = 0.0
             for accumulation_step in range(1, runtime.gradient_accumulation_steps + 1):
-                record = records[record_index % len(records)]
-                record_index += 1
-                self._verbose_print(
-                    f"  accumulation {accumulation_step}/{runtime.gradient_accumulation_steps} "
-                    f"record={record.record_id}"
-                )
-                rollouts = self._execute_rollouts(record, requirements.rollout_count)
-                self._verbose_print(
-                    f"  generated {len(rollouts)} rollout(s) for record={record.record_id}"
-                )
-                selection_batches = self._select_objective_tokens(rollouts, capabilities)
+                # Resample records until one yields trainable tokens; question-less rollouts
+                # (e.g. the policy asked no addressable helper questions) are skipped.
+                rollouts: tuple[AnnotatedRollout, ...] | None = None
+                selection_batches = None
+                for _ in range(len(records)):
+                    record = records[record_index % len(records)]
+                    record_index += 1
+                    candidate = self._execute_rollouts(record, requirements.rollout_count)
+                    self._verbose_print(
+                        f"  accumulation {accumulation_step}/"
+                        f"{runtime.gradient_accumulation_steps} record={record.record_id} "
+                        f"rollouts={len(candidate)}"
+                    )
+                    candidate_selections = self._select_objective_tokens(candidate, capabilities)
+                    if candidate_selections is not None:
+                        rollouts, selection_batches = candidate, candidate_selections
+                        break
+                    self._verbose_print(
+                        f"  skipped record={record.record_id}: objective selected no tokens"
+                    )
+                if selection_batches is None or rollouts is None:
+                    raise ValueError(
+                        "no dataset record produced trainable tokens for the enabled objectives; "
+                        "check token_scope and whether the policy asks addressable helper questions"
+                    )
                 rollouts = self._attach_selections(rollouts, selection_batches)
                 reward_batch = self._prepare_rewards(record, rollouts, requirements)
                 feedback_bundle = self._prepare_feedback(record, rollouts, requirements)
@@ -291,7 +305,7 @@ class CanonicalTrainer:
         self,
         rollouts: tuple[AnnotatedRollout, ...],
         capabilities: dict[str, ObjectiveCapabilities],
-    ) -> dict[str, dict[str, TokenSelectionResult]]:
+    ) -> dict[str, dict[str, TokenSelectionResult]] | None:
         selected: dict[str, dict[str, TokenSelectionResult]] = {}
         for objective, capability in capabilities.items():
             objective_selections = {
@@ -304,7 +318,7 @@ class CanonicalTrainer:
                 for rollout in rollouts
             }
             if any(item.durable.active_token_count == 0 for item in objective_selections.values()):
-                raise ValueError(f"{objective} selected no tokens for at least one rollout")
+                return None
             selected[objective] = objective_selections
         return selected
 

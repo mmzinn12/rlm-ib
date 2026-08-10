@@ -242,3 +242,39 @@ def test_full_provider_stack_runs_one_optimizer_step(tmp_path):
 def test_build_objective_composer_requires_enabled_objective():
     with pytest.raises(ValueError, match="at least one objective"):
         build_objective_composer(ObjectivesSpec())
+
+
+def make_bare_trainer(policy_owner: str) -> CanonicalTrainer:
+    # Only policy_owner is consulted by _select_objective_tokens; other collaborators are unused.
+    spec = RunSpec(student=StudentSpec(model_id="student", policy_owner=policy_owner))
+    return CanonicalTrainer(
+        spec=spec,
+        dataset=object(),
+        rollout_engine=object(),
+        objectives=object(),
+        optimizer=object(),
+        policy_scores=object(),
+        policy_owner=policy_owner,
+        policy_parameters=(),
+    )
+
+
+def test_select_objective_tokens_returns_none_when_no_tokens_selected():
+    from rlm_train.objectives.protocol import ObjectiveCapabilities
+
+    trainer = make_bare_trainer("student")
+    capabilities = {"sdpo": ObjectiveCapabilities(token_scope=TokenScope.ALL_STUDENT_TOKENS)}
+    rollout = training_rollout()
+
+    # Student-owned generation -> selectable.
+    assert trainer._select_objective_tokens((rollout,), capabilities) is not None
+
+    # Same rollout but the generation is owned by someone else -> nothing selected -> None.
+    other_generation = rollout.annotations.generations[0].model_copy(
+        update={"policy_owner": "other"}
+    )
+    other_annotations = rollout.annotations.model_copy(
+        update={"generations": (other_generation,)}
+    )
+    other_rollout = rollout.model_copy(update={"annotations": other_annotations})
+    assert trainer._select_objective_tokens((other_rollout,), capabilities) is None
