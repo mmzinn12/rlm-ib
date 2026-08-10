@@ -48,7 +48,13 @@ def reconstruct_generation(
 
 
 class TransformersPolicyScoreProvider:
-    """Recompute differentiable logits for exactly the selected sampled tokens."""
+    """Recompute differentiable student logits for exactly the selected sampled tokens.
+
+    For each rollout it reconstructs the sampled generation, re-runs the policy with gradients to
+    obtain logits over the continuation, and keeps only the rows at the selected token positions.
+    The result feeds the SDPO loss, which expects ``[selected_tokens, vocabulary]`` logits keyed by
+    rollout id.
+    """
 
     def __init__(self, policy: TrainablePolicy) -> None:
         self.policy = policy
@@ -60,6 +66,21 @@ class TransformersPolicyScoreProvider:
         rollouts: tuple[AnnotatedRollout, ...],
         selections: dict[str, TokenSelectionResult],
     ) -> PolicyScoreBatch:
+        """Return per-rollout student logits at the selected positions, with gradients enabled.
+
+        Args:
+            objective: Name of the requesting objective (unused; kept for the protocol).
+            capabilities: Declared objective capabilities (unused for SDPO scoring).
+            rollouts: Rollouts to score.
+            selections: Per-rollout token selection identifying which positions to score.
+
+        Returns:
+            A ``PolicyScoreBatch`` mapping each rollout id to its ``[selected_tokens, vocabulary]``
+            logits tensor.
+
+        Raises:
+            ValueError: If the policy does not return logits.
+        """
         torch = __import__("torch")
         scores: dict[str, object] = {}
         for rollout in rollouts:
@@ -149,7 +170,12 @@ class SelfDistillationTeacherTargetProvider:
 
 
 class JudgeFeedbackProvider:
-    """Assess each traced helper-question edge under the requested scopes."""
+    """Turn traced helper-question edges into scoped judge assessments.
+
+    For every rollout, every requested assessment scope, and every traced edge, it builds an
+    ID-addressed ``JudgeView`` and asks the judge to score it, collecting the results into a single
+    ``FeedbackBundle`` consumed downstream by teacher-target construction and artifact writing.
+    """
 
     def __init__(self, judge: Judge) -> None:
         self.judge = judge
@@ -160,6 +186,16 @@ class JudgeFeedbackProvider:
         rollouts: tuple[AnnotatedRollout, ...],
         scopes: frozenset[AssessmentScope],
     ) -> FeedbackBundle:
+        """Assess every traced edge of each rollout under each requested scope.
+
+        Args:
+            record: Dataset record for the rollouts (unused; kept for the protocol).
+            rollouts: Rollouts whose edges are assessed.
+            scopes: Assessment scopes to evaluate, processed in a deterministic order.
+
+        Returns:
+            A ``FeedbackBundle`` holding one local assessment per (rollout, scope, edge).
+        """
         assessments = []
         for rollout in rollouts:
             for scope in sorted(scopes, key=lambda item: item.value):
@@ -169,10 +205,22 @@ class JudgeFeedbackProvider:
         return FeedbackBundle(local_assessments=tuple(assessments))
 
 
+def build_policy_score_provider(policy: TrainablePolicy) -> TransformersPolicyScoreProvider:
+    """Wrap the shared policy in the provider that recomputes differentiable student scores."""
+    return TransformersPolicyScoreProvider(policy)
+
+
+def build_feedback_provider(judge: Judge) -> JudgeFeedbackProvider:
+    """Wrap the judge in the provider that assesses traced edges into a FeedbackBundle."""
+    return JudgeFeedbackProvider(judge)
+
+
 __all__ = [
     "JudgeFeedbackProvider",
     "SelfDistillationTeacherTargetProvider",
     "TransformersPolicyScoreProvider",
+    "build_feedback_provider",
+    "build_policy_score_provider",
     "reconstruct_generation",
     "selected_positions",
 ]

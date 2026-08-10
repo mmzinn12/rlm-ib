@@ -41,6 +41,7 @@ class ComponentFactory:
         self._builders: dict[str, Callable[[RunSpec], Any]] = {}
 
     def register(self, component: str, builder: Callable[[RunSpec], Any]) -> None:
+        """Register a builder for a named component; each component may be registered only once."""
         if component in self._builders:
             raise ValueError(f"component builder {component!r} is already registered")
         self._builders[component] = builder
@@ -51,6 +52,7 @@ class ComponentFactory:
         *,
         overrides: ResolvedComponents | None = None,
     ) -> ResolvedComponents:
+        """Build each component from its registered builder unless injected via ``overrides``."""
         injected = overrides or ResolvedComponents()
         values: dict[str, Any] = {}
         for name in ResolvedComponents.__dataclass_fields__:

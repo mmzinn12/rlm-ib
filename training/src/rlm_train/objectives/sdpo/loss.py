@@ -11,9 +11,40 @@ from rlm_train.spec.objectives import SDPOSpec
 
 
 def build_sdpo_compute_loss(spec: SDPOSpec) -> Callable[[ObjectiveBatch], ObjectiveResult]:
-    """Distill the student toward the teacher's top-k+tail distribution on selected tokens."""
+    """Create the SDPO loss closure that distills the student toward the teacher distribution.
+
+    The returned closure computes, per rollout and per selected token, the reverse KL from the
+    student to the detached teacher over the teacher's top-k token support plus a single tail
+    bucket (the mass outside the top-k). Student log-probs are gathered on the teacher's top-k ids
+    and the student tail is the log-sum-exp of the remaining vocabulary. Per-rollout losses are
+    summed weighted by their active-token count and normalized by the total, so every selected
+    token contributes equally regardless of how rollouts are batched.
+
+    Args:
+        spec: SDPO configuration; retained for closure identity and future parameterization.
+
+    Returns:
+        A callable mapping an ``ObjectiveBatch`` to an ``ObjectiveResult`` (scalar loss plus the
+        active-token count and diagnostics). The batch must provide, per rollout id, student
+        ``policy_scores`` as ``[selected_tokens, vocabulary]`` logits and a teacher target whose
+        top-k support aligns with the selected positions.
+    """
 
     def compute_loss(batch: ObjectiveBatch) -> ObjectiveResult:
+        """Compute the active-token-weighted reverse-KL loss for one objective batch.
+
+        Args:
+            batch: Prepared batch supplying, per rollout id, student ``policy_scores`` logits and
+                the aligned teacher ``teacher_targets``.
+
+        Returns:
+            An ``ObjectiveResult`` with the scalar loss, the total active-token count, and the
+            per-batch rollout diagnostic.
+
+        Raises:
+            ValueError: If student logits are not 2-D, student and teacher selections misalign, or
+                no active tokens were selected across the batch.
+        """
         torch = __import__("torch")
         total = None
         active_total = 0
@@ -55,6 +86,14 @@ def build_sdpo_compute_loss(spec: SDPOSpec) -> Callable[[ObjectiveBatch], Object
 
 
 def build_sdpo_objective(spec: SDPOSpec) -> SDPOObjective:
+    """Build an SDPO objective bound to its reverse-KL top-k+tail loss.
+
+    Args:
+        spec: SDPO configuration (token scope, feedback scope, ``top_k``, weight).
+
+    Returns:
+        An ``SDPOObjective`` whose ``compute`` distills the student toward the teacher targets.
+    """
     return SDPOObjective(spec, build_sdpo_compute_loss(spec))
 
 

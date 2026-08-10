@@ -1,4 +1,11 @@
-"""Load a Hugging Face causal LM into a TransformersPolicy. Requires a GPU/Colab runtime."""
+"""Construct trainable policies from a StudentSpec.
+
+The policy is the student model that generates rollouts and is scored during training. Building
+one loads a Hugging Face causal LM plus tokenizer, so these entry points require the
+``transformers``/``torch`` stack and, in practice, a GPU/Colab runtime. ``build_policy`` is the
+generic entry point that dispatches on ``StudentSpec.adapter``; ``build_transformers_policy`` is
+the concrete Transformers implementation.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +27,20 @@ def build_transformers_policy(
     checkpoint_id: str = "latest",
     generation: GenerationConfig | None = None,
 ) -> TransformersPolicy:
+    """Load a Hugging Face causal LM and tokenizer into a trainable TransformersPolicy.
+
+    Args:
+        student: Student model specification (model/tokenizer ids, revisions, trust flag).
+        runtime: Runtime settings; ``precision`` selects the model dtype and ``seed`` the base seed.
+        checkpoint_id: Identifier recorded on the policy identity for provenance.
+        generation: Optional generation/prompt-formatting config; defaults to a fresh one.
+
+    Returns:
+        A ``TransformersPolicy`` wrapping the loaded model, placed on CUDA when available.
+
+    Raises:
+        RuntimeError: If ``transformers`` or ``torch`` are not importable.
+    """
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -69,4 +90,25 @@ def build_transformers_policy(
     )
 
 
-__all__ = ["build_transformers_policy"]
+def build_policy(
+    student: StudentSpec, *, runtime: RuntimeSpec, checkpoint_id: str = "latest"
+) -> TransformersPolicy:
+    """Build a trainable policy by dispatching on the student adapter.
+
+    Args:
+        student: Student model specification; ``adapter`` selects the concrete builder.
+        runtime: Runtime settings forwarded to the concrete builder.
+        checkpoint_id: Identifier recorded on the policy identity for provenance.
+
+    Returns:
+        The constructed trainable policy for the requested adapter.
+
+    Raises:
+        NotImplementedError: If ``student.adapter`` has no wired builder.
+    """
+    if student.adapter == "transformers":
+        return build_transformers_policy(student, runtime=runtime, checkpoint_id=checkpoint_id)
+    raise NotImplementedError(f"policy adapter {student.adapter!r} is not wired yet")
+
+
+__all__ = ["build_policy", "build_transformers_policy"]

@@ -216,3 +216,6 @@ __marimo__/
 
 # Agent Contexts
 agent-context/
+
+#Pylint Outputs
+_pylint/

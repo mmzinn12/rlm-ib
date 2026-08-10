@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from rlm_train.spec.run import RuntimeSpec
+
 
 def build_scheduler(optimizer: Any, *, kind: str, warmup_steps: int, total_steps: int) -> Any:
     transformers = __import__("transformers")
@@ -18,4 +20,18 @@ def build_scheduler(optimizer: Any, *, kind: str, warmup_steps: int, total_steps
     )
 
 
-__all__ = ["build_scheduler"]
+def build_training_scheduler(
+    optimizer: Any, runtime: RuntimeSpec, *, total_steps: int
+) -> Any | None:
+    """Return a warmup scheduler when runtime.warmup_steps is set, else None (constant LR)."""
+    if runtime.warmup_steps <= 0:
+        return None
+    return build_scheduler(
+        optimizer,
+        kind=runtime.scheduler,
+        warmup_steps=runtime.warmup_steps,
+        total_steps=total_steps,
+    )
+
+
+__all__ = ["build_scheduler", "build_training_scheduler"]

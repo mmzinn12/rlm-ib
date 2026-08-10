@@ -10,6 +10,20 @@ from rlm_train.datasets.records import DatasetRecord
 
 
 class JSONLDataset:
+    """Deterministic dataset backed by a JSON Lines file, one record per non-blank line.
+
+    Each line must be a JSON object with a prompt field and may include an id, a target, and a
+    ``metadata`` object; any other key is rejected. The prompt becomes the record's public task
+    while the target is kept as verifier-owned data, preserving the public/verifier separation.
+    Content is read once at construction, so ``identity`` and ``records`` are stable and hashable.
+
+    Attributes:
+        path: Filesystem path to the JSONL file (must exist at construction).
+        prompt_field: Line key holding the prompt/public task (default ``"prompt"``).
+        target_field: Line key holding the verifier target, if present (default ``"target"``).
+        id_field: Line key holding the record id; falls back to the 1-based line number.
+    """
+
     def __init__(
         self,
         path: str | Path,
