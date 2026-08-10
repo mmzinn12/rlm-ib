@@ -149,13 +149,24 @@ class TransformersResponseGenerator:
             raise ValueError("generation seed and sample index must be non-negative")
         prompt_ids = self.formatter.encode_prompt(prompt)
         prompt_truncated = False
-        if len(prompt_ids) > self.configuration.max_prompt_tokens:
+        context_budget = self.model_context_length - self.configuration.max_new_tokens
+        if context_budget <= 0:
+            raise ValueError(
+                f"max_new_tokens ({self.configuration.max_new_tokens}) leaves no room in the "
+                f"model context ({self.model_context_length})"
+            )
+        budget = min(self.configuration.max_prompt_tokens, context_budget)
+        if len(prompt_ids) > budget:
             if not self.configuration.allow_prompt_truncation:
-                raise ValueError("formatted prompt exceeds configured max_prompt_tokens")
-            prompt_ids = prompt_ids[-self.configuration.max_prompt_tokens :]
+                raise ValueError(
+                    f"formatted prompt has {len(prompt_ids)} tokens but the budget is {budget} "
+                    f"(max_prompt_tokens={self.configuration.max_prompt_tokens}, "
+                    f"model_context_length={self.model_context_length}, "
+                    f"max_new_tokens={self.configuration.max_new_tokens}); raise the budget, "
+                    f"lower max_new_tokens, or set allow_prompt_truncation"
+                )
+            prompt_ids = prompt_ids[-budget:]
             prompt_truncated = True
-        if len(prompt_ids) + self.configuration.max_new_tokens > self.model_context_length:
-            raise ValueError("generation would exceed the configured model context length")
         device = model_device(self.model)
         input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
         attention_mask = torch.ones_like(input_ids)
