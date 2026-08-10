@@ -24,6 +24,7 @@ class GenerationSpec(ImmutableSpec):
         do_sample: Sample when ``True``; greedy decode when ``False``.
         use_chat_template: Format prompts with the tokenizer's chat template.
         allow_prompt_truncation: Truncate over-long prompts instead of raising.
+        model_context_length: Override the model's context window; ``None`` reads the model config.
     """
 
     max_prompt_tokens: int = Field(default=512, gt=0)
@@ -33,6 +34,7 @@ class GenerationSpec(ImmutableSpec):
     do_sample: bool = True
     use_chat_template: bool = True
     allow_prompt_truncation: bool = False
+    model_context_length: int | None = Field(default=None, gt=0)
 
 
 class StudentSpec(ImmutableSpec):

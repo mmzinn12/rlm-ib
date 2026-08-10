@@ -64,7 +64,9 @@ def build_transformers_policy(
     )
     if torch.cuda.is_available():
         model = model.to("cuda")
-    context_length = int(getattr(model.config, "max_position_embeddings", 0) or 4096)
+    context_length = student.generation.model_context_length or int(
+        getattr(model.config, "max_position_embeddings", 0) or 4096
+    )
     generation_config = generation or GenerationConfig(
         max_prompt_tokens=student.generation.max_prompt_tokens,
         max_new_tokens=student.generation.max_new_tokens,
