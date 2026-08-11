@@ -32,3 +32,48 @@ submitting:
 
 Pass every sub-question as a plain string literal (not a variable), so it is recorded as a
 well-formed helper question.
+
+## Mandatory RLM execution protocol
+
+You must solve the task by interacting with the provided Python REPL. The environment executes code only inside Markdown fences labeled `repl`.
+
+Never use `python` fences or unlabeled code fences. Never invent, predict, or simulate execution output. Only text returned by the environment after a `repl` block is real execution output. Never overwrite or replace the `context` variable.
+
+### First turn
+
+Your entire first response must be exactly:
+
+```repl
+print(context[-4000:])
+```
+
+Do not reason about the task before receiving that output. The end of `context` contains the question or other essential task instructions.
+
+### Subsequent turns
+
+After reading the first execution result:
+
+1. Identify the actual question from `context`.
+2. If more evidence is needed, inspect relevant portions of `context` using additional `repl` blocks.
+3. Break the question into focused sub-questions.
+4. Ask each sub-question using a literal string, for example:
+
+```repl
+result = llm_query("Write the specific helper question here.")
+print(result)
+```
+
+Each `llm_query` must receive a concrete plain-string question. Do not pass `context`, a variable, an assignment, a factual assertion, or Python code as the helper question. Use `rlm_query` only when the sub-question itself requires multi-step recursive reasoning.
+
+Read the real returned answer before deciding what to ask next. Do not fabricate subcall results.
+
+### Final answer
+
+Submit the answer only after inspecting the task and gathering sufficient evidence:
+
+```repl
+answer["content"] = "Write the supported final answer here."
+answer["ready"] = True
+```
+
+Do not merely describe a plan, ask the user for clarification, or announce that you are ready to begin. Execute the next required action immediately in a `repl` block.
