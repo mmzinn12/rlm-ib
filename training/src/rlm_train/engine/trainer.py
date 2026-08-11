@@ -83,7 +83,7 @@ class PolicyScoreProvider(Protocol):
 
 
 class ArtifactWriter(Protocol):
-    def write(self, rollout: AnnotatedRollout) -> Path: ...
+    def write(self, rollout: AnnotatedRollout) -> Path | None: ...
 
 
 class MetricRecorder(Protocol):
@@ -500,7 +500,9 @@ class CanonicalTrainer:
                     "objectives": objective_records,
                 }
             )
-            paths.append(str(self.artifact_writer.write(enriched)))
+            path = self.artifact_writer.write(enriched)
+            if path is not None:
+                paths.append(str(path))
         return paths
 
     def _record_metrics(self, step: int, loss: float, gradient_norm: float) -> None:

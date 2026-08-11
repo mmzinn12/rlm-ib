@@ -5,16 +5,20 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from rlm_train.trajectory.schema import AnnotatedRollout
 
 
 class RolloutJSONWriter:
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, *, mode: Literal["all", "failures"] = "all") -> None:
         self.directory = Path(directory)
+        self.mode = mode
         self.directory.mkdir(parents=True, exist_ok=True)
 
-    def write(self, rollout: AnnotatedRollout) -> Path:
+    def write(self, rollout: AnnotatedRollout) -> Path | None:
+        if self.mode == "failures" and not any(node.failed for node in rollout.execution.nodes):
+            return None
         destination = self.directory / f"{rollout.rollout_id.replace('/', '_')}.json"
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", dir=self.directory

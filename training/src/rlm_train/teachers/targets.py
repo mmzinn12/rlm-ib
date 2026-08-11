@@ -13,6 +13,7 @@ class TeacherTarget(BaseModel):
     target_id: str = Field(min_length=1)
     rollout_id: str = Field(min_length=1)
     generation_id: str = Field(min_length=1)
+    selected_generation_ids: tuple[str, ...] = ()
     selected_token_ids: tuple[int, ...]
     selected_positions: tuple[int, ...]
     teacher_logprobs: tuple[float, ...] = ()
@@ -31,6 +32,11 @@ class TeacherTarget(BaseModel):
         count = len(self.selected_token_ids)
         if count == 0 or len(self.selected_positions) != count:
             raise ValueError("teacher target requires aligned selected IDs and positions")
+        if self.selected_generation_ids:
+            if len(self.selected_generation_ids) != count:
+                raise ValueError("selected generation IDs must align with selected tokens")
+            if self.selected_generation_ids[0] != self.generation_id:
+                raise ValueError("generation_id must identify the first selected generation")
         if self.teacher_logprobs and len(self.teacher_logprobs) != count:
             raise ValueError("teacher log probabilities must align with selected tokens")
         if self.topk_token_ids:

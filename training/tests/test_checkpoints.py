@@ -109,3 +109,31 @@ def test_checkpoint_restore_rejects_different_run_spec(tmp_path):
 
     with pytest.raises(ValueError, match="fingerprint"):
         writer.restore_training_state(checkpoint, run_spec_fingerprint="b" * 64)
+
+
+def test_final_checkpoint_can_be_disabled(tmp_path):
+    torch = pytest.importorskip("torch")
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.SGD((parameter,), lr=0.1)
+
+    class Policy:
+        def save_pretrained(self, destination):
+            raise AssertionError(f"unexpected checkpoint write to {destination}")
+
+    writer = TransformersCheckpointWriter(
+        tmp_path,
+        policy=Policy(),
+        optimizer=optimizer,
+        scheduler=None,
+        checkpoint_interval=None,
+        retain_checkpoints=1,
+        save_final_checkpoint=False,
+    )
+
+    checkpoint = writer.write(
+        TrainerState(optimizer_step=1, run_spec_fingerprint=FINGERPRINT), final=True
+    )
+
+    assert checkpoint is None
+    assert not (tmp_path / "checkpoints").exists()
+    assert not (tmp_path / LATEST_CHECKPOINT_FILENAME).exists()

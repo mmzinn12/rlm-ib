@@ -25,11 +25,11 @@ from rlm_train.objectives.sdpo.loss import build_sdpo_compute_loss
 from rlm_train.objectives.sdpo.target_support import extract_topk_teacher_target
 from rlm_train.rollouts.protocol import RolloutResult
 from rlm_train.rollouts.selectors import select_tokens
+from rlm_train.spec.artifacts import ArtifactSpec
 from rlm_train.spec.feedback import AssessmentScope
+from rlm_train.spec.models import StudentSpec
 from rlm_train.spec.objectives import ObjectivesSpec, SDPOSpec, TokenScope
 from rlm_train.spec.run import DatasetRefSpec, RunSpec, RuntimeSpec
-from rlm_train.spec.artifacts import ArtifactSpec
-from rlm_train.spec.models import StudentSpec
 from rlm_train.teachers.targets import TeacherTarget
 from rlm_train.trajectory.schema import (
     AnnotatedRollout,
@@ -302,6 +302,59 @@ def test_rubric_feedback_conditions_teacher_and_makes_loss_positive():
     assert loss_for(without_feedback) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_sdpo_providers_include_selected_tokens_from_every_generation():
+    from rlm_train.objectives.protocol import ObjectiveCapabilities
+
+    pytest.importorskip("torch")
+    rollout = training_rollout()
+    second_generation = rollout.annotations.generations[0].model_copy(
+        update={
+            "generation_id": "g-root-later",
+            "text": "ef",
+            "token_ids": (4, 5),
+            "token_offsets": ((0, 1), (1, 2)),
+        }
+    )
+    rollout = rollout.model_copy(
+        update={
+            "annotations": rollout.annotations.model_copy(
+                update={"generations": (*rollout.annotations.generations, second_generation)}
+            )
+        }
+    )
+    policy = FakePolicy(VOCAB)
+    selections = {
+        rollout.rollout_id: select_tokens(
+            rollout,
+            objective="sdpo",
+            token_scope=TokenScope.ALL_STUDENT_TOKENS,
+            policy_owner="student",
+        )
+    }
+    capabilities = ObjectiveCapabilities(token_scope=TokenScope.ALL_STUDENT_TOKENS)
+
+    student = TransformersPolicyScoreProvider(policy).score(
+        "sdpo", capabilities, (rollout,), selections
+    )
+    targets = SelfDistillationTeacherTargetProvider(policy, top_k=TOP_K).build(
+        "sdpo", (rollout,), selections, FeedbackBundle()
+    )
+
+    assert student.policy_scores[rollout.rollout_id].shape == (6, VOCAB)
+    target = targets[rollout.rollout_id]
+    assert target.selected_token_ids == (0, 1, 2, 3, 4, 5)
+    assert target.selected_positions == (0, 1, 2, 3, 0, 1)
+    assert target.selected_generation_ids == (
+        "g-root",
+        "g-root",
+        "g-root",
+        "g-root",
+        "g-root-later",
+        "g-root-later",
+    )
+    assert len(target.topk_token_ids) == 6
+
+
 def test_build_objective_composer_requires_enabled_objective():
     with pytest.raises(ValueError, match="at least one objective"):
         build_objective_composer(ObjectivesSpec())
@@ -336,8 +389,6 @@ def test_select_objective_tokens_returns_none_when_no_tokens_selected():
     other_generation = rollout.annotations.generations[0].model_copy(
         update={"policy_owner": "other"}
     )
-    other_annotations = rollout.annotations.model_copy(
-        update={"generations": (other_generation,)}
-    )
+    other_annotations = rollout.annotations.model_copy(update={"generations": (other_generation,)})
     other_rollout = rollout.model_copy(update={"annotations": other_annotations})
     assert trainer._select_objective_tokens((other_rollout,), capabilities) is None

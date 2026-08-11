@@ -15,6 +15,7 @@ class ArtifactSpec(ImmutableSpec):
     metrics_jsonl: bool = True
     checkpoint_interval: int | None = Field(default=None, gt=0)
     retain_checkpoints: int | None = Field(default=None, gt=0)
+    save_final_checkpoint: bool = True
 
 
 __all__ = ["ArtifactSpec"]

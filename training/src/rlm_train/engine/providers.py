@@ -19,17 +19,23 @@ from rlm_train.teachers.targets import TeacherTarget
 from rlm_train.trajectory.schema import AnnotatedRollout, ObjectiveSelection
 
 
-def selected_positions(selection: ObjectiveSelection) -> tuple[int, ...]:
-    generation_id = selection.ranges[0].generation_id
-    positions = tuple(
-        position
-        for item in selection.ranges
-        if item.generation_id == generation_id
-        for position in range(item.token_start, item.token_end)
+def selected_generation_positions(
+    selection: ObjectiveSelection,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Group every selected token position by generation in durable range order."""
+    positions_by_generation: dict[str, list[int]] = {}
+    for item in selection.ranges:
+        positions_by_generation.setdefault(item.generation_id, []).extend(
+            range(item.token_start, item.token_end)
+        )
+    groups = tuple(
+        (generation_id, tuple(positions))
+        for generation_id, positions in positions_by_generation.items()
+        if positions
     )
-    if not positions:
+    if not groups:
         raise ValueError("objective selection has no selected token positions")
-    return positions
+    return groups
 
 
 def reconstruct_generation(
@@ -104,19 +110,21 @@ class TransformersPolicyScoreProvider:
         scores: dict[str, object] = {}
         for rollout in rollouts:
             selection = selections[rollout.rollout_id].durable
-            generation_id = selection.ranges[0].generation_id
-            positions = selected_positions(selection)
-            sampled = reconstruct_generation(rollout, generation_id, self.policy)
-            policy_score = self.policy.score_sampled_ids(
-                sampled,
-                require_grad=True,
-                return_logits=True,
-                return_logprobs=False,
-                positions=positions,
-            )
-            if policy_score.logits is None:
-                raise ValueError("policy must return logits for SDPO scoring")
-            scores[rollout.rollout_id] = policy_score.logits
+            generation_logits = []
+            for generation_id, positions in selected_generation_positions(selection):
+                sampled = reconstruct_generation(rollout, generation_id, self.policy)
+                policy_score = self.policy.score_sampled_ids(
+                    sampled,
+                    require_grad=True,
+                    return_logits=True,
+                    return_logprobs=False,
+                    positions=positions,
+                )
+                if policy_score.logits is None:
+                    raise ValueError("policy must return logits for SDPO scoring")
+                generation_logits.append(policy_score.logits)
+            torch = __import__("torch")
+            scores[rollout.rollout_id] = torch.cat(generation_logits, dim=0)
         return PolicyScoreBatch(policy_scores=scores)
 
 
@@ -144,43 +152,54 @@ class SelfDistillationTeacherTargetProvider:
         targets: dict[str, TeacherTarget] = {}
         for rollout in rollouts:
             selection = selections[rollout.rollout_id].durable
-            generation_id = selection.ranges[0].generation_id
-            positions = selected_positions(selection)
-            generation_record = next(
-                item
-                for item in rollout.annotations.generations
-                if item.generation_id == generation_id
-            )
-            sampled = reconstruct_generation(rollout, generation_id, self.policy)
-            # Condition the teacher on the rubric feedback so it differs from the student.
-            conditioning = render_rubric_conditioning(
-                rollout, generation_record.node_id, feedback.local_assessments
-            )
-            if conditioning:
-                prefix = tuple(self.policy.tokenize(conditioning + "\n"))
-                if prefix:
-                    sampled = replace(sampled, prompt_token_ids=prefix + sampled.prompt_token_ids)
-            policy_score = self.policy.score_sampled_ids(
-                sampled,
-                require_grad=False,
-                return_logits=True,
-                return_logprobs=False,
-                positions=positions,
-            )
-            if policy_score.logits is None:
-                raise ValueError("policy must return logits for SDPO teacher targets")
-            teacher_logits = policy_score.logits
-            topk = extract_topk_teacher_target(
-                teacher_logits,
-                top_k=self.top_k,
-                teacher_version=self.teacher_version,
-                tokenizer_fingerprint=self.policy.tokenizer_identity.resolved_fingerprint,
-            )
-            selected_ids = tuple(sampled.token_ids[position] for position in positions)
+            groups = selected_generation_positions(selection)
+            selected_ids: list[int] = []
+            selected_positions: list[int] = []
+            selected_generation_ids: list[str] = []
+            topk_token_ids: list[tuple[int, ...]] = []
+            topk_logprobs: list[tuple[float, ...]] = []
+            tail_logprobs: list[float] = []
+            for generation_id, positions in groups:
+                generation_record = next(
+                    item
+                    for item in rollout.annotations.generations
+                    if item.generation_id == generation_id
+                )
+                sampled = reconstruct_generation(rollout, generation_id, self.policy)
+                # Condition the teacher on rubric feedback attached to this generation's node.
+                conditioning = render_rubric_conditioning(
+                    rollout, generation_record.node_id, feedback.local_assessments
+                )
+                if conditioning:
+                    prefix = tuple(self.policy.tokenize(conditioning + "\n"))
+                    if prefix:
+                        sampled = replace(
+                            sampled, prompt_token_ids=prefix + sampled.prompt_token_ids
+                        )
+                policy_score = self.policy.score_sampled_ids(
+                    sampled,
+                    require_grad=False,
+                    return_logits=True,
+                    return_logprobs=False,
+                    positions=positions,
+                )
+                if policy_score.logits is None:
+                    raise ValueError("policy must return logits for SDPO teacher targets")
+                topk = extract_topk_teacher_target(
+                    policy_score.logits,
+                    top_k=self.top_k,
+                    teacher_version=self.teacher_version,
+                    tokenizer_fingerprint=self.policy.tokenizer_identity.resolved_fingerprint,
+                )
+                selected_ids.extend(sampled.token_ids[position] for position in positions)
+                selected_positions.extend(positions)
+                selected_generation_ids.extend(generation_id for _ in positions)
+                topk_token_ids.extend(topk.token_ids)
+                topk_logprobs.extend(topk.logprobs)
+                tail_logprobs.extend(topk.tail_logprobs)
             target_identity = {
                 "rollout": rollout.rollout_id,
-                "generation": generation_id,
-                "positions": positions,
+                "generation_positions": groups,
                 "teacher": self.policy.identity.resolved_fingerprint,
                 "configuration": configuration_fingerprint,
             }
@@ -190,12 +209,13 @@ class SelfDistillationTeacherTargetProvider:
             targets[rollout.rollout_id] = TeacherTarget(
                 target_id=target_id,
                 rollout_id=rollout.rollout_id,
-                generation_id=generation_id,
-                selected_token_ids=selected_ids,
-                selected_positions=positions,
-                topk_token_ids=topk.token_ids,
-                topk_logprobs=topk.logprobs,
-                tail_logprob_mass=topk.tail_logprobs,
+                generation_id=groups[0][0],
+                selected_generation_ids=tuple(selected_generation_ids),
+                selected_token_ids=tuple(selected_ids),
+                selected_positions=tuple(selected_positions),
+                topk_token_ids=tuple(topk_token_ids),
+                topk_logprobs=tuple(topk_logprobs),
+                tail_logprob_mass=tuple(tail_logprobs),
                 teacher_fingerprint=self.policy.identity.resolved_fingerprint,
                 tokenizer_fingerprint=self.policy.tokenizer_identity.resolved_fingerprint,
                 feedback_projection_ids=tuple(item.projection_id for item in projections),
@@ -262,5 +282,5 @@ __all__ = [
     "build_policy_score_provider",
     "reconstruct_generation",
     "render_rubric_conditioning",
-    "selected_positions",
+    "selected_generation_positions",
 ]

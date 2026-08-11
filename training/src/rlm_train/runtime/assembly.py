@@ -151,6 +151,7 @@ def build_canonical_trainer(
         scheduler=scheduler,
         checkpoint_interval=run.artifacts.checkpoint_interval,
         retain_checkpoints=run.artifacts.retain_checkpoints,
+        save_final_checkpoint=run.artifacts.save_final_checkpoint,
     )
     initial_state = None
     if resume_checkpoint is not None:
@@ -173,8 +174,14 @@ def build_canonical_trainer(
             run.teacher, policy=policy, top_k=run.objectives.sdpo.top_k
         ),
         teachers=build_teachers(run.teacher, policy=policy),
-        artifact_writer=build_artifact_writer(run.artifacts.output_directory),
-        metric_sink=build_metric_sink(run.artifacts.output_directory),
+        artifact_writer=build_artifact_writer(
+            run.artifacts.output_directory, mode=run.artifacts.rollout_json
+        ),
+        metric_sink=(
+            build_metric_sink(run.artifacts.output_directory)
+            if run.artifacts.metrics_jsonl
+            else None
+        ),
         precision_context=precision_context_factory(run.runtime.precision),
         checkpoint_writer=checkpoint_writer,
         initial_state=initial_state,

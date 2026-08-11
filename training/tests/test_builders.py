@@ -74,6 +74,7 @@ def test_build_optimizer_creates_adamw_over_parameters():
 def test_build_metric_sink_and_artifact_writer(tmp_path):
     assert isinstance(build_metric_sink(tmp_path), JSONLMetricSink)
     assert isinstance(build_artifact_writer(tmp_path), RolloutJSONWriter)
+    assert build_artifact_writer(tmp_path, mode="none") is None
 
 
 def test_build_rollout_engine_from_spec():

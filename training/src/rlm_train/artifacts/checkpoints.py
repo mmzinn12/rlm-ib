@@ -27,6 +27,7 @@ class TransformersCheckpointWriter:
         scheduler: Any | None,
         checkpoint_interval: int | None,
         retain_checkpoints: int | None,
+        save_final_checkpoint: bool = True,
     ) -> None:
         self.output_directory = Path(output_directory)
         self.checkpoint_directory = self.output_directory / "checkpoints"
@@ -35,8 +36,11 @@ class TransformersCheckpointWriter:
         self.scheduler = scheduler
         self.checkpoint_interval = checkpoint_interval
         self.retain_checkpoints = retain_checkpoints
+        self.save_final_checkpoint = save_final_checkpoint
 
     def write(self, state: TrainerState, *, final: bool) -> Path | None:
+        if final and not self.save_final_checkpoint:
+            return None
         if not final and (
             self.checkpoint_interval is None or state.optimizer_step % self.checkpoint_interval != 0
         ):

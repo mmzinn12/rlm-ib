@@ -92,6 +92,9 @@ benchmarks = ["synthetic-arithmetic"]
 [artifacts]
 rollout_json = "all"
 metrics_jsonl = true
+checkpoint_interval = 100
+retain_checkpoints = 1
+save_final_checkpoint = true
 ```
 
 Every enabled objective selects its own token scope: `natural_language`,
