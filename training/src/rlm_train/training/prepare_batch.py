@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rlm_train.attempts.attempt_records import AnnotatedAttempt
 from rlm_train.feedback.feedback_records import FeedbackBundle
-from rlm_train.sdpo.feedback_predictions import FeedbackPredictions
 from rlm_train.token_selection.selection import TokenSelection
+
+if TYPE_CHECKING:
+    from rlm_train.sdpo.feedback_predictions import FeedbackPredictions
 
 
 @dataclass(frozen=True)
