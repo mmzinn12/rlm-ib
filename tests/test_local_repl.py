@@ -23,6 +23,28 @@ class TestLocalREPLBasic:
         assert "Hello, World!" in result.stdout
         repl.cleanup()
 
+    def test_bare_expression_output(self):
+        """Test that a final bare expression is displayed like an interactive Python REPL."""
+        repl = LocalREPL(context_payload="original context content")
+        result = repl.execute_code("context[-7:]")
+        assert result.stdout.strip() == "'content'"
+        repl.cleanup()
+
+    def test_print_output_is_not_duplicated(self):
+        """Test that an explicit print does not also display its None return value."""
+        repl = LocalREPL()
+        result = repl.execute_code("print('visible once')")
+        assert result.stdout.splitlines() == ["visible once"]
+        repl.cleanup()
+
+    def test_assignment_remains_silent(self):
+        """Test that statements without a final expression do not produce output."""
+        repl = LocalREPL()
+        result = repl.execute_code("x = 3")
+        assert result.stdout == ""
+        assert repl.locals["x"] == 3
+        repl.cleanup()
+
     def test_error_handling(self):
         """Test that errors are captured in stderr."""
         repl = LocalREPL()

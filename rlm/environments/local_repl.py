@@ -1,3 +1,4 @@
+import ast
 import copy
 import io
 import json
@@ -21,6 +22,43 @@ from rlm.environments.base_env import (
     extract_tool_value,
     validate_custom_tools,
 )
+
+
+def execute_with_display(code: str, namespace: dict[str, Any]) -> None:
+    """Execute code and display the value of its final bare expression.
+
+    This gives the local environment used by Colab normal interactive-Python behavior, so
+    expressions such as ``context[-4000:]`` produce visible output without requiring an explicit
+    ``print`` call. Assignments remain silent, and expressions that already print do not emit an
+    additional ``None``.
+
+    TODO: Generalize this execution behavior across Docker, Modal, Prime, E2B, and other REPL
+    backends so every environment exposes identical expression-display semantics.
+    """
+    tree = ast.parse(code, mode="exec")
+    if not tree.body or not isinstance(tree.body[-1], ast.Expr):
+        exec(compile(tree, "<repl>", "exec"), namespace, namespace)
+        return
+
+    def display_value(value: Any) -> None:
+        if value is not None:
+            print(repr(value))
+
+    final_expression = tree.body[-1]
+    display_expression = ast.Expr(
+        value=ast.Call(
+            func=ast.Name(id="__rlm_display_value__", ctx=ast.Load()),
+            args=[final_expression.value],
+            keywords=[],
+        )
+    )
+    tree.body[-1] = ast.copy_location(display_expression, final_expression)
+    ast.fix_missing_locations(tree)
+    namespace["__rlm_display_value__"] = display_value
+    try:
+        exec(compile(tree, "<repl>", "exec"), namespace, namespace)
+    finally:
+        namespace.pop("__rlm_display_value__", None)
 
 
 class _AnswerDict(dict):
@@ -605,7 +643,7 @@ class LocalREPL(NonIsolatedEnv):
         with self._capture_output() as (stdout_buf, stderr_buf), self._temp_cwd():
             try:
                 combined = {**self.globals, **self.locals}
-                exec(code, combined, combined)
+                execute_with_display(code, combined)
 
                 # Update locals with new variables
                 for key, value in combined.items():
