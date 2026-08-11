@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
@@ -71,6 +72,7 @@ class JudgeSpec(ImmutableSpec):
     api_key_environment: str = Field(default="OPENAI_API_KEY", min_length=1)
     base_url: AnyHttpUrl | None = None
     max_attempts: int = Field(default=3, ge=1, le=5)
+    cache_path: Path | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -78,6 +80,8 @@ class JudgeSpec(ImmutableSpec):
     def validate_provider(self) -> JudgeSpec:
         if self.provider == "openai" and self.model == "deterministic-fake":
             raise ValueError("openai judge provider requires a real model route")
+        if self.provider != "openai" and self.cache_path is not None:
+            raise ValueError("judge cache_path is only supported by the openai provider")
         return self
 
 

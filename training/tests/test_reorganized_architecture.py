@@ -8,16 +8,13 @@ from pydantic import ValidationError
 from rlm_train.artifacts import RolloutJSONWriter
 from rlm_train.engine import CanonicalTrainer, PolicyScoreBatch
 from rlm_train.feedback import FeedbackVisibility
-from rlm_train.judge.views import build_judge_view
+from rlm_train.feedback.feedback_views import create_feedback_view
 from rlm_train.metrics import MetricCollector
 from rlm_train.objectives import (
     ObjectiveCapabilities,
     ObjectiveComposer,
     ObjectiveResult,
 )
-from rlm_train.rollouts.protocol import RolloutResult
-from rlm_train.rollouts.selectors import select_tokens
-from rlm_train.rollouts.semantics import annotate_generation
 from rlm_train.spec import (
     AssessmentScope,
     DatasetRefSpec,
@@ -28,6 +25,7 @@ from rlm_train.spec import (
     StudentSpec,
     TokenScope,
 )
+from rlm_train.token_selection import choose_tokens, find_text_regions
 from rlm_train.trajectory.schema import (
     AnnotatedRollout,
     AnnotationRecord,
@@ -60,12 +58,12 @@ def representative_rollout() -> AnnotatedRollout:
     root_generation = character_generation("g-root", "root", root_text)
     child_generation = character_generation("g-child", "child-1", "direct response")
     spans = (
-        *annotate_generation(
+        *find_text_regions(
             root_generation,
             node_role=NodeRole.ROOT,
             default_decision_role=DecisionRole.REASONING,
         ),
-        *annotate_generation(
+        *find_text_regions(
             child_generation,
             node_role=NodeRole.PLAIN_SUBCALL,
             default_decision_role=DecisionRole.SUBCALL_RESPONSE,
@@ -198,11 +196,11 @@ def test_run_spec_accepts_canonical_full_rlm_shape_and_is_immutable():
 def test_each_objective_scope_selects_structural_student_owned_ranges():
     rollout = representative_rollout()
     results = {
-        scope: select_tokens(
+        scope: choose_tokens(
             rollout,
-            objective=scope.value,
-            token_scope=scope,
-            policy_owner="student",
+            training_method=scope.value,
+            included_text=scope,
+            student_id="student",
         )
         for scope in TokenScope
     }
@@ -231,14 +229,14 @@ def test_each_objective_scope_selects_structural_student_owned_ranges():
 
 def test_local_judge_views_exclude_siblings_final_answer_and_private_reference():
     rollout = representative_rollout()
-    retrospective = build_judge_view(
+    retrospective = create_feedback_view(
         rollout,
         scope=AssessmentScope.RETROSPECTIVE_LOCAL,
         focal_edge_ids=("edge-1",),
         allowed_objectives=frozenset({"sdpo"}),
         allowed_token_scopes=frozenset({TokenScope.HELPER_QUESTIONS}),
     )
-    causal = build_judge_view(
+    causal = create_feedback_view(
         rollout,
         scope=AssessmentScope.CAUSAL_LOCAL,
         focal_edge_ids=("edge-1",),
@@ -259,7 +257,7 @@ def test_local_judge_views_exclude_siblings_final_answer_and_private_reference()
 
 def test_non_privileged_view_is_invariant_to_final_result_replacement():
     rollout = representative_rollout()
-    first = build_judge_view(
+    first = create_feedback_view(
         rollout,
         scope=AssessmentScope.CAUSAL_LOCAL,
         focal_edge_ids=("edge-1",),
@@ -274,7 +272,7 @@ def test_non_privileged_view_is_invariant_to_final_result_replacement():
             "result": {"final_answer": "CHANGED"},
         }
     )
-    second = build_judge_view(
+    second = create_feedback_view(
         changed,
         scope=AssessmentScope.CAUSAL_LOCAL,
         focal_edge_ids=("edge-1",),
@@ -298,9 +296,9 @@ def test_canonical_trainer_performs_real_capability_driven_optimizer_step(
             return (DatasetRecord(record_id="task", public_task={"prompt": "task"}),)
 
     class Engine:
-        def execute(self, request):
-            del request
-            return RolloutResult(completion=None, rollout=rollout)
+        def run_many(self, record, *, count, mode="training"):
+            del record, mode
+            return tuple(rollout for _ in range(count))
 
     class Scores:
         def score(self, objective, capabilities, rollouts, selections):
@@ -329,7 +327,7 @@ def test_canonical_trainer_performs_real_capability_driven_optimizer_step(
     trainer = CanonicalTrainer(
         spec=spec,
         dataset=Dataset(),
-        rollout_engine=Engine(),
+        attempt_runner=Engine(),
         objectives=ObjectiveComposer({"quadratic": (1.0, QuadraticObjective())}),
         optimizer=torch.optim.SGD((parameter,), lr=spec.runtime.learning_rate),
         policy_scores=Scores(),

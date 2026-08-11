@@ -107,7 +107,7 @@ class HotpotQADataset:
             raise ValueError("HotpotQA record IDs must be unique")
         self.cached_records = tuple(values)
         return self.cached_records
-    
+
     @staticmethod
     def _validate_row(row, row_number):
         required = {"id", "question", "context", "answer", "type", "level"}
@@ -121,7 +121,7 @@ class HotpotQADataset:
         if not isinstance(context, Mapping):
             raise ValueError(f"HotpotQA row {row_number} context must be an object")
         return question, context
-    
+
     @staticmethod
     def convert_row(row: Mapping[str, Any], *, row_number: int) -> DatasetRecord:
         question, context = HotpotQADataset._validate_row(row, row_number)

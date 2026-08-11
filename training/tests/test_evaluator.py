@@ -6,9 +6,9 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from rlm_train.attempts import AttemptRequest, AttemptResult
 from rlm_train.datasets.records import DatasetRecord
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
-from rlm_train.rollouts.protocol import RolloutRequest, RolloutResult
 from rlm_train.runtime import ComponentFactory, register_evaluator_builder
 from rlm_train.spec.artifacts import ArtifactSpec
 from rlm_train.spec.models import StudentSpec
@@ -32,11 +32,11 @@ class FakeDataset:
         return self._records
 
 
-class EchoRolloutEngine:
-    def execute(self, request: RolloutRequest) -> RolloutResult:
+class EchoAttemptRunner:
+    def run(self, request: AttemptRequest) -> AttemptResult:
         answer = f"answer::{request.task_id}"
         completion = SimpleNamespace(response=answer)
-        rollout = AnnotatedRollout(
+        attempt = AnnotatedRollout(
             rollout_id=f"rollout-{request.task_id}",
             mode=request.mode,
             task=TaskPartition(task_id=request.task_id, public=request.public_task),
@@ -56,7 +56,7 @@ class EchoRolloutEngine:
             ),
             result={"final_answer": answer},
         )
-        return RolloutResult(completion=completion, rollout=rollout)
+        return AttemptResult(completion=completion, attempt=attempt)
 
 
 class LengthScorer:
@@ -80,7 +80,7 @@ def held_out_records() -> tuple[DatasetRecord, ...]:
 def test_evaluator_writes_gradable_predictions(tmp_path):
     evaluator = RecursiveEvaluator(
         dataset=FakeDataset(held_out_records()),
-        rollout_engine=EchoRolloutEngine(),
+        attempt_runner=EchoAttemptRunner(),
         scorer=LengthScorer(),
         output_directory=tmp_path,
         checkpoint_id="ckpt-1",
@@ -111,7 +111,7 @@ def test_evaluator_builder_resolves_through_factory(tmp_path):
     register_evaluator_builder(
         factory,
         dataset=FakeDataset(held_out_records()),
-        rollout_engine=EchoRolloutEngine(),
+        attempt_runner=EchoAttemptRunner(),
         scorer=LengthScorer(),
         checkpoint_id="ckpt-2",
     )

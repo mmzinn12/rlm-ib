@@ -13,13 +13,14 @@ _VERIFIER_KEYS = frozenset({"target", "target_data", "reference", "reference_ans
 
 class DatasetRecord(BaseModel):
     """A single dataset record with public task and verifier-owned data separated.
-    
-    Attributes: 
+
+    Attributes:
         record_id: The unique identifier for the dataset record.
         public_task: The portion of the record intended for public consumption.
         verifier_data: The portion of the record owned by the verifier.
         metadata: Additional metadata associated with the record.
     """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     record_id: str = Field(min_length=1)

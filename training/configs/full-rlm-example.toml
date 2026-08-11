@@ -21,10 +21,6 @@ schema = "trajectory-v1"
 mode = "categorical"
 max_attempts = 3
 
-[teacher]
-strategy = "current_policy"
-feedback_conditioning = true
-
 [feedback]
 default_scope = "retrospective_local"
 upstream_depth = 1
@@ -37,7 +33,7 @@ enabled = true
 weight = 1.0
 token_scope = "helper_questions"
 feedback_scope = "retrospective_local"
-divergence = "forward_kl"
+divergence = "reverse_kl"
 target_support = "top_k_with_tail"
 top_k = 32
 

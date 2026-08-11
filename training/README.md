@@ -5,8 +5,8 @@ canonical `rlm.RLM` engine. Root generations, Python/REPL execution, plain helpe
 recursive child RLMs, state, hierarchy, and final-answer submission all follow the same
 runtime path used by inference.
 
-Colab is a thin gateway over this package. It does not own a rollout algorithm, trainer,
-objective, trajectory schema, or checkpoint format.
+Colab is a thin gateway over this package. It does not own attempt execution, the training
+loop, token selection, or checkpoint formats.
 
 ## Architecture
 
@@ -15,13 +15,14 @@ The dependency direction is strict:
 ```text
 CLI / gateways
     -> public API
-    -> runtime factory
-    -> training or evaluation engine
-       -> rollout adapter -> rlm core
+    -> create training run
+    -> training loop
+       -> attempt runner -> rlm core
        -> judge -> feedback
-       -> teachers
-       -> objectives
-       -> metrics and artifacts
+       -> token selection
+       -> student and feedback-conditioned scoring
+       -> training-method loss
+       -> optimizer and saved runs
 ```
 
 The base `rlm` package has no PyTorch or `rlm_train` dependency. It exposes immutable
@@ -33,18 +34,19 @@ tree.
 The main training packages are:
 
 - `api/`: stable `train()` and `evaluate()` entry points.
-- `spec/`: immutable, serializable `RunSpec` configuration.
-- `models/`: exact sampled-ID generation and rescoring contracts.
-- `rollouts/`: canonical RLM adapter, event recorder, structural semantics, and
-  per-objective token selectors.
+- `settings/`: immutable, serializable run configuration.
+- `student/`: student loading, differentiable exact-token scoring, and model saving.
+- `generation/`: chat formatting, exact sampled-ID generation, and the core-RLM client.
+- `attempts/`: the full-RLM runner, event recorder, and annotated attempt records.
+- `token_selection/`: semantic text regions, character/token matching, and per-method choices.
 - `trajectory/`: durable annotated rollout schema, validation, projection, and replay.
 - `feedback/` and `judge/`: minimal typed evidence views, visibility enforcement,
   scoped assessments, and one-way overall aggregation.
-- `teachers/`: current-policy, fixed, and EMA strategies with exact-ID targets.
-- `objectives/`: independent GRPO, SDPO, and Gram packages plus the sole composer.
+- `sdpo/`, `grpo/`, and `gram/`: method-specific settings and loss calculations. SDPO
+  additionally owns feedback-prompt construction and detached feedback predictions.
 - `datasets/` and `evaluation/`: public/private task separation and whole-policy scoring.
-- `engine/`, `runtime/`, `metrics/`, and `artifacts/`: optimization, construction,
-  observations, provenance, and safe rollout JSON.
+- `training/`, `metrics/`, and `saved_runs/`: the readable training loop, optimization,
+  observations, provenance, checkpoints, and safe attempt JSON.
 - `gateways/colab/`: CUDA/authentication/storage preflight followed by public API calls.
 
 The former Colab-owned trainer, depth-one rollout path, experiment layer, and duplicate
@@ -78,8 +80,8 @@ max_records = 200
 
 ## RunSpec
 
-A run is declared in TOML or JSON and resolved into concrete protocol implementations by
-the runtime factory. Direct component injection is supported for tests and research.
+A run is declared in TOML or JSON and passed to `create_training_run`. Direct collaborator
+injection remains supported for tests and research.
 
 ```toml
 [student]
@@ -93,16 +95,12 @@ environment = "local"
 max_depth = 2
 max_iterations = 20
 
-[teacher]
-strategy = "current_policy"
-feedback_conditioning = true
-
 [objectives.sdpo]
 enabled = true
 weight = 1.0
 token_scope = "helper_questions"
 feedback_scope = "retrospective_local"
-divergence = "forward_kl"
+divergence = "reverse_kl"
 target_support = "top_k_with_tail"
 
 [training_dataset]
@@ -147,7 +145,7 @@ max_attempts = 3
 
 `categorical` asks the LLM for enum labels and maps those labels deterministically to
 bounded numeric values. `full` asks the LLM to emit the bounded numeric values directly.
-Both modes return the same `ScopedAssessment` boundary, so objectives and teachers do
+Both modes return the same `ScopedAssessment` boundary, so training methods do
 not branch on provider output format. Register the configured component with
 `rlm_train.runtime.register_judge_builder(factory)` or inject a `Judge` directly for
 research runs.
@@ -162,10 +160,9 @@ train(spec, components=injected_components)
 evaluate(spec, components=injected_components)
 ```
 
-The corresponding CLIs are `rlm-train` and `rlm-evaluate`. A concrete deployment either
-registers component builders on `ComponentFactory` or injects resolved components. The
-fully resolved specification and component identities are written before the first
-rollout.
+The corresponding CLIs are `rlm-train` and `rlm-evaluate`. Default training explicitly creates
+the student, attempt runner, feedback collector, training methods, optimizer, and saved-run
+writers. The resolved settings and student identities are written before the first attempt.
 
 Fresh training runs require an empty output directory and always write a final Transformers
 checkpoint under `checkpoints/`. Configure `artifacts.checkpoint_interval` and

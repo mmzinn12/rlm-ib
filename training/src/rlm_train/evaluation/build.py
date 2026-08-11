@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from rlm_train.attempts import create_attempt_runner
 from rlm_train.datasets.build import build_dataset
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
 from rlm_train.evaluation.scoring import Scorer
-from rlm_train.rollouts.build import build_rollout_engine
 from rlm_train.spec import RunSpec
 
 
@@ -24,9 +24,9 @@ def build_evaluator(
 
     Args:
         run: Run specification; the first entry of ``evaluation_datasets`` is scored.
-        policy: Shared trainable policy used to generate evaluation rollouts.
+        policy: Shared trainable student used to generate evaluation attempts.
         scorer: Scorer that grades each final answer.
-        backend: RLM client backend forwarded to the rollout engine.
+        backend: RLM client backend forwarded to the attempt runner.
         checkpoint_id: Identifier recorded on each evaluation record.
         predictions_filename: Name of the gradable predictions file written to the output dir.
 
@@ -40,7 +40,7 @@ def build_evaluator(
         raise ValueError("evaluation_datasets must be set to build an evaluator")
     return RecursiveEvaluator(
         dataset=build_dataset(run.evaluation_datasets[0]),
-        rollout_engine=build_rollout_engine(run, policy=policy, backend=backend),
+        attempt_runner=create_attempt_runner(run, student_client=policy, backend=backend),
         scorer=scorer,
         output_directory=run.artifacts.output_directory,
         checkpoint_id=checkpoint_id,

@@ -11,12 +11,11 @@ from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
+from rlm_train.attempts import RLMAttemptRunner, create_attempt_runner
 from rlm_train.datasets.build import build_dataset
 from rlm_train.datasets.protocol import Dataset
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
 from rlm_train.evaluation.scoring import Scorer
-from rlm_train.rollouts.build import build_rollout_engine
-from rlm_train.rollouts.rlm_engine import RLMRolloutEngine
 from rlm_train.runtime.factory import ComponentFactory
 from rlm_train.spec import RunSpec
 
@@ -32,14 +31,14 @@ def register_default_builders(
     checkpoint_id: str = "latest",
     predictions_filename: str = "predictions.jsonl",
 ) -> None:
-    """Register the spec-constructible builders (dataset, rollout engine, evaluator) on a factory.
+    """Register the spec-constructible builders (dataset, attempt runner, evaluator) on a factory.
 
     Args:
         factory: Component factory to register builders on.
-        policy: Shared trainable policy bound into the rollout engine and evaluator.
+        policy: Shared trainable student bound into the attempt runner and evaluator.
         scorer: Scorer used by the evaluator to grade held-out responses.
         held_out: Optional explicit held-out dataset; falls back to the first eval dataset.
-        backend: RLM client backend forwarded to the rollout engine.
+        backend: RLM client backend forwarded to the attempt runner.
         environment_kwargs: Optional overrides forwarded to the RLM environment.
         checkpoint_id: Identifier recorded on evaluation records.
         predictions_filename: Name of the gradable predictions file the evaluator writes.
@@ -50,10 +49,10 @@ def register_default_builders(
             raise ValueError("training_dataset must be set to build a dataset")
         return build_dataset(run.training_dataset)
 
-    def rollout_engine_builder(run: RunSpec) -> RLMRolloutEngine:
-        return build_rollout_engine(
+    def attempt_runner_builder(run: RunSpec) -> RLMAttemptRunner:
+        return create_attempt_runner(
             run,
-            policy=policy,
+            student_client=policy,
             backend=backend,
             environment_kwargs=environment_kwargs,
         )
@@ -66,9 +65,9 @@ def register_default_builders(
             dataset = build_dataset(run.evaluation_datasets[0])
         return RecursiveEvaluator(
             dataset=dataset,
-            rollout_engine=build_rollout_engine(
+            attempt_runner=create_attempt_runner(
                 run,
-                policy=policy,
+                student_client=policy,
                 backend=backend,
                 environment_kwargs=environment_kwargs,
             ),
@@ -80,7 +79,7 @@ def register_default_builders(
         )
 
     factory.register("dataset", dataset_builder)
-    factory.register("rollout_engine", rollout_engine_builder)
+    factory.register("attempt_runner", attempt_runner_builder)
     factory.register("evaluator", evaluator_builder)
 
 
@@ -118,10 +117,10 @@ def build_canonical_trainer(
     Args:
         run: Run specification supplying every sub-config the collaborators read.
         policy: Shared trainable policy that is scored, rolled out, and used as the teacher.
-        judge: Judge used to produce scoped feedback for each rollout.
+        judge: Feedback judge used to produce scoped feedback for each rollout.
 
     Returns:
-        A ``CanonicalTrainer`` wired with dataset, rollout engine, objectives, optimizer, scheduler,
+        A ``CanonicalTrainer`` wired with dataset, attempt runner, objectives, optimizer, scheduler,
         providers, teacher targets, and metric/artifact sinks.
 
     Raises:
@@ -162,7 +161,7 @@ def build_canonical_trainer(
     return CanonicalTrainer(
         spec=run,
         dataset=build_dataset(run.training_dataset),
-        rollout_engine=build_rollout_engine(run, policy=policy),
+        attempt_runner=create_attempt_runner(run, student_client=policy),
         objectives=build_objective_composer(run.objectives),
         optimizer=optimizer,
         scheduler=scheduler,
@@ -203,11 +202,11 @@ def assemble_default_factory(
         scorer: Optional scorer; when provided, an evaluator builder is also registered.
 
     Returns:
-        A ``ComponentFactory`` resolving policy, judge, dataset, rollout engine, trainer, and
+        A ``ComponentFactory`` resolving policy, judge, dataset, attempt runner, trainer, and
         (optionally) evaluator.
     """
     from rlm_train.evaluation.build import build_evaluator
-    from rlm_train.judge.providers import build_judge
+    from rlm_train.judge.create_judge import create_judge
     from rlm_train.models.build import build_policy
 
     factory = ComponentFactory()
@@ -216,12 +215,14 @@ def assemble_default_factory(
         runtime=spec.runtime,
         checkpoint_path=checkpoint_path,
     )
-    judge = build_judge(spec.judge)
+    judge = create_judge(spec.judge)
 
     factory.register("policy", lambda run: policy)
     factory.register("judge", lambda run: judge)
     factory.register("dataset", lambda run: build_dataset(run.training_dataset))
-    factory.register("rollout_engine", lambda run: build_rollout_engine(run, policy=policy))
+    factory.register(
+        "attempt_runner", lambda run: create_attempt_runner(run, student_client=policy)
+    )
     factory.register(
         "trainer",
         lambda run: build_canonical_trainer(
@@ -250,7 +251,7 @@ __all__ = [
     "assemble_default_factory",
     "build_canonical_trainer",
     "build_dataset",
-    "build_rollout_engine",
+    "create_attempt_runner",
     "precision_context_factory",
     "register_default_builders",
 ]

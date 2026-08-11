@@ -1,18 +1,18 @@
-"""Whole-recursive-policy evaluation through the canonical rollout protocol."""
+"""Whole-recursive-student evaluation through the canonical attempt protocol."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rlm_train.attempts import AttemptRequest, AttemptRunner
 from rlm_train.datasets.records import DatasetRecord
 from rlm_train.evaluation.records import RecursiveEvaluationRecord
 from rlm_train.evaluation.scoring import Scorer
-from rlm_train.rollouts.protocol import RolloutEngine, RolloutRequest
 
 
 class RecursiveEvaluationRunner:
-    def __init__(self, rollout_engine: RolloutEngine, scorer: Scorer):
-        self.rollout_engine = rollout_engine
+    def __init__(self, attempt_runner: AttemptRunner, scorer: Scorer):
+        self.attempt_runner = attempt_runner
         self.scorer = scorer
 
     def evaluate(
@@ -24,20 +24,21 @@ class RecursiveEvaluationRunner:
     ) -> tuple[RecursiveEvaluationRecord, ...]:
         results = []
         for index, record in enumerate(records):
-            rollout_result = self.rollout_engine.execute(
-                RolloutRequest(
+            attempt_result = self.attempt_runner.run(
+                AttemptRequest(
                     task_id=record.record_id,
                     public_task=record.public_task,
                     private_reference=record.verifier_data,
                     mode="evaluation",
                 )
             )
-            final_answer = rollout_result.completion.response
+            final_answer = attempt_result.completion.response
             score, scoring = self.scorer.score(record, final_answer)
             results.append(
                 RecursiveEvaluationRecord(
                     record_id=record.record_id,
-                    rollout_id=rollout_result.rollout.rollout_id,
+                    # Evaluation schema version 1 retains ``rollout_id``.
+                    rollout_id=attempt_result.attempt.rollout_id,
                     checkpoint_id=checkpoint_id,
                     sampling_seed=base_seed + index,
                     final_answer=final_answer,

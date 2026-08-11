@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rlm_train.attempts import AttemptRunner
 from rlm_train.datasets.protocol import Dataset
 from rlm_train.datasets.records import require_question_context
 from rlm_train.evaluation.predictions import PredictionsJSONLWriter
 from rlm_train.evaluation.records import RecursiveEvaluationRecord
 from rlm_train.evaluation.runner import RecursiveEvaluationRunner
 from rlm_train.evaluation.scoring import Scorer
-from rlm_train.rollouts.protocol import RolloutEngine
 
 
 class RecursiveEvaluator:
@@ -20,7 +20,7 @@ class RecursiveEvaluator:
         self,
         *,
         dataset: Dataset,
-        rollout_engine: RolloutEngine,
+        attempt_runner: AttemptRunner,
         scorer: Scorer,
         output_directory: str | Path,
         checkpoint_id: str,
@@ -28,7 +28,7 @@ class RecursiveEvaluator:
         predictions_filename: str = "predictions.jsonl",
     ) -> None:
         self.dataset = dataset
-        self.runner = RecursiveEvaluationRunner(rollout_engine, scorer)
+        self.runner = RecursiveEvaluationRunner(attempt_runner, scorer)
         self.output_directory = Path(output_directory)
         self.checkpoint_id = checkpoint_id
         self.base_seed = base_seed

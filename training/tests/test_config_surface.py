@@ -6,11 +6,11 @@ import json
 
 import pytest
 
+from rlm_train.attempts import RLMAttemptRunner
 from rlm_train.datasets.records import DatasetRecord
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
 from rlm_train.evaluation.scorers import ExactMatchScorer, build_scorer
 from rlm_train.experiment import ExperimentSettings
-from rlm_train.rollouts.rlm_engine import RLMRolloutEngine
 from rlm_train.runtime import ComponentFactory, register_default_builders
 from rlm_train.spec.artifacts import ArtifactSpec
 from rlm_train.spec.models import StudentSpec
@@ -87,7 +87,7 @@ def test_register_default_builders_resolves_pipeline_from_spec(tmp_path):
     resolved = factory.resolve(spec)
 
     assert [record.record_id for record in resolved.dataset.records()] == ["t1"]
-    assert isinstance(resolved.rollout_engine, RLMRolloutEngine)
+    assert isinstance(resolved.attempt_runner, RLMAttemptRunner)
     assert isinstance(resolved.evaluator, RecursiveEvaluator)
     # Held-out dataset is wired into the evaluator from the spec pointer.
     assert [record.record_id for record in resolved.evaluator.dataset.records()] == ["e1", "e2"]

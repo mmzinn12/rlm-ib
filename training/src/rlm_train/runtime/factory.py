@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm_train.artifacts.provenance import RunProvenance
+from rlm_train.attempts import AttemptRunner
 from rlm_train.datasets.protocol import Dataset
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
 from rlm_train.evaluation.scoring import Scorer
 from rlm_train.judge.cache import JudgeCache
-from rlm_train.judge.protocol import Judge
-from rlm_train.judge.providers import build_judge
-from rlm_train.rollouts.protocol import RolloutEngine
+from rlm_train.judge.create_judge import create_judge
+from rlm_train.judge.judge import FeedbackJudge
 from rlm_train.spec import RunSpec
 
 FACTORY_VERSION = "rlm-train-factory-v1"
@@ -23,7 +23,7 @@ FACTORY_VERSION = "rlm-train-factory-v1"
 class ResolvedComponents:
     trainer: Any | None = None
     evaluator: Any | None = None
-    rollout_engine: Any | None = None
+    attempt_runner: Any | None = None
     policy: Any | None = None
     dataset: Any | None = None
     objectives: Any | None = None
@@ -80,8 +80,8 @@ def register_judge_builder(
 ) -> None:
     """Register RunSpec-driven judge construction on the runtime factory."""
 
-    def builder(run: RunSpec) -> Judge:
-        return build_judge(run.judge, client=client, cache=cache)
+    def builder(run: RunSpec) -> FeedbackJudge:
+        return create_judge(run.judge, client=client, cache=cache)
 
     factory.register("judge", builder)
 
@@ -90,7 +90,7 @@ def register_evaluator_builder(
     factory: ComponentFactory,
     *,
     dataset: Dataset,
-    rollout_engine: RolloutEngine,
+    attempt_runner: AttemptRunner,
     scorer: Scorer,
     checkpoint_id: str,
     base_seed: int = 0,
@@ -100,7 +100,7 @@ def register_evaluator_builder(
     def builder(run: RunSpec) -> RecursiveEvaluator:
         return RecursiveEvaluator(
             dataset=dataset,
-            rollout_engine=rollout_engine,
+            attempt_runner=attempt_runner,
             scorer=scorer,
             output_directory=run.artifacts.output_directory,
             checkpoint_id=checkpoint_id,

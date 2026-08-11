@@ -27,14 +27,30 @@ def train(
         resume_checkpoint=resume_checkpoint,
     )
     if factory is None:
-        from rlm_train.runtime.assembly import assemble_default_factory
+        from rlm_train.saved_runs.run_info import RunInfo
+        from rlm_train.training.create_training_run import create_default_training_run
 
-        factory = assemble_default_factory(
+        training_loop = create_default_training_run(
             spec,
             checkpoint_path=resume_checkpoint,
             resume_training=resume_checkpoint is not None,
+            verbose=verbose,
         )
-    elif resume_checkpoint is not None:
+        source = {}
+        if resume_checkpoint is not None:
+            source["resume_checkpoint"] = str(resume_checkpoint)
+        RunInfo(
+            run_spec_fingerprint=spec.fingerprint,
+            resolved_spec=spec.resolved_dict(),
+            components={
+                "student": training_loop.student.model_info.model_dump(mode="json"),
+                "tokenizer": training_loop.student.tokenizer_info.model_dump(mode="json"),
+            },
+            factory_version="plain-language-training-v1",
+            source=source,
+        ).write(output / "run-provenance.json")
+        return training_loop.train()
+    if resume_checkpoint is not None:
         raise ValueError("resume_from is only supported by the default component factory")
     resolver = factory
     resolved = resolver.resolve(spec, overrides=components)

@@ -8,6 +8,7 @@ import pytest
 
 from rlm_train.artifacts.build import build_artifact_writer
 from rlm_train.artifacts.rollout_json import RolloutJSONWriter
+from rlm_train.attempts import RLMAttemptRunner, create_attempt_runner
 from rlm_train.datasets.adapters.hotpotqa import HotpotQADataset
 from rlm_train.datasets.adapters.jsonl import JSONLDataset
 from rlm_train.datasets.build import build_dataset
@@ -20,11 +21,9 @@ from rlm_train.engine.providers import (
 )
 from rlm_train.evaluation.evaluator import RecursiveEvaluator
 from rlm_train.evaluation.scorers import build_scorer
-from rlm_train.judge.providers.fake import DeterministicFakeJudge
+from rlm_train.judge.fake_judge import DeterministicFakeJudge
 from rlm_train.metrics.build import build_metric_sink
 from rlm_train.metrics.jsonl import JSONLMetricSink
-from rlm_train.rollouts.build import build_rollout_engine
-from rlm_train.rollouts.rlm_engine import RLMRolloutEngine
 from rlm_train.spec.models import StudentSpec, TeacherSpec, TeacherStrategy
 from rlm_train.spec.run import DatasetRefSpec, RunSpec, RuntimeSpec
 from rlm_train.teachers.build import build_teacher_target_provider, build_teachers
@@ -110,10 +109,10 @@ def test_build_metric_sink_and_artifact_writer(tmp_path):
     assert build_artifact_writer(tmp_path, mode="none") is None
 
 
-def test_build_rollout_engine_from_spec():
+def test_create_attempt_runner_from_settings():
     spec = RunSpec(student=StudentSpec(model_id="student", policy_owner="student"))
-    engine = build_rollout_engine(spec, policy=FakePolicy())
-    assert isinstance(engine, RLMRolloutEngine)
+    runner = create_attempt_runner(spec, student_client=FakePolicy())
+    assert isinstance(runner, RLMAttemptRunner)
 
 
 def test_build_providers_return_expected_types():

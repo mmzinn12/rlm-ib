@@ -7,15 +7,15 @@ import json
 from dataclasses import replace
 
 from rlm_train.engine.trainer import PolicyScoreBatch
+from rlm_train.feedback.feedback_views import create_feedback_view
 from rlm_train.feedback.schema import FeedbackBundle, ScopedAssessment
-from rlm_train.judge.protocol import Judge
-from rlm_train.judge.views import build_judge_view
+from rlm_train.judge.judge import FeedbackJudge
 from rlm_train.models.protocol import SampledGeneration, TrainablePolicy
 from rlm_train.objectives.protocol import ObjectiveCapabilities
 from rlm_train.objectives.sdpo.target_support import extract_topk_teacher_target
-from rlm_train.rollouts.selectors import TokenSelectionResult
 from rlm_train.spec.feedback import AssessmentScope
 from rlm_train.teachers.targets import TeacherTarget
+from rlm_train.token_selection import TokenSelectionResult
 from rlm_train.trajectory.schema import AnnotatedRollout, ObjectiveSelection
 
 
@@ -256,14 +256,14 @@ class SelfDistillationTeacherTargetProvider:
 
 
 class JudgeFeedbackProvider:
-    """Turn traced helper-question edges into scoped judge assessments.
+    """Turn traced helper-question edges into scoped feedback assessments.
 
     For every rollout, every requested assessment scope, and every traced edge, it builds an
-    ID-addressed ``JudgeView`` and asks the judge to score it, collecting the results into a single
+    ID-addressed feedback view and asks the judge to score it, collecting the results into a
     ``FeedbackBundle`` consumed downstream by teacher-target construction and artifact writing.
     """
 
-    def __init__(self, judge: Judge) -> None:
+    def __init__(self, judge: FeedbackJudge) -> None:
         self.judge = judge
 
     def assess(
@@ -286,7 +286,11 @@ class JudgeFeedbackProvider:
         for rollout in rollouts:
             for scope in sorted(scopes, key=lambda item: item.value):
                 for edge in rollout.execution.edges:
-                    view = build_judge_view(rollout, scope=scope, focal_edge_ids=(edge.edge_id,))
+                    view = create_feedback_view(
+                        rollout,
+                        scope=scope,
+                        focal_edge_ids=(edge.edge_id,),
+                    )
                     assessments.append(self.judge.assess(view))
         return FeedbackBundle(local_assessments=tuple(assessments))
 
@@ -296,7 +300,7 @@ def build_policy_score_provider(policy: TrainablePolicy) -> TransformersPolicySc
     return TransformersPolicyScoreProvider(policy)
 
 
-def build_feedback_provider(judge: Judge) -> JudgeFeedbackProvider:
+def build_feedback_provider(judge: FeedbackJudge) -> JudgeFeedbackProvider:
     """Wrap the judge in the provider that assesses traced edges into a FeedbackBundle."""
     return JudgeFeedbackProvider(judge)
 

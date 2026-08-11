@@ -16,7 +16,7 @@ from rlm_train.engine.providers import (
 )
 from rlm_train.engine.trainer import CanonicalTrainer
 from rlm_train.feedback.schema import FeedbackBundle
-from rlm_train.judge.providers.fake import DeterministicFakeJudge
+from rlm_train.judge.fake_judge import DeterministicFakeJudge
 from rlm_train.metrics import MetricCollector
 from rlm_train.models.identity import PolicyIdentity, TokenizerIdentity
 from rlm_train.models.protocol import PolicyScore
@@ -24,14 +24,13 @@ from rlm_train.objectives.build import build_objective_composer
 from rlm_train.objectives.protocol import ObjectiveBatch
 from rlm_train.objectives.sdpo.loss import build_sdpo_compute_loss
 from rlm_train.objectives.sdpo.target_support import extract_topk_teacher_target
-from rlm_train.rollouts.protocol import RolloutResult
-from rlm_train.rollouts.selectors import select_tokens
 from rlm_train.spec.artifacts import ArtifactSpec
 from rlm_train.spec.feedback import AssessmentScope
 from rlm_train.spec.models import StudentSpec
 from rlm_train.spec.objectives import ObjectivesSpec, SDPOSpec, TokenScope
 from rlm_train.spec.run import DatasetRefSpec, RunSpec, RuntimeSpec
 from rlm_train.teachers.targets import TeacherTarget
+from rlm_train.token_selection import choose_tokens
 from rlm_train.trajectory.schema import (
     AnnotatedRollout,
     AnnotationRecord,
@@ -204,9 +203,9 @@ def test_full_provider_stack_runs_one_optimizer_step(tmp_path):
             return (DatasetRecord(record_id="task", public_task={"prompt": "task"}),)
 
     class Engine:
-        def execute(self, request):
-            del request
-            return RolloutResult(completion=None, rollout=rollout)
+        def run_many(self, record, *, count, mode="training"):
+            del record, mode
+            return tuple(rollout for _ in range(count))
 
     spec = RunSpec(
         student=StudentSpec(model_id="student", policy_owner="student"),
@@ -223,7 +222,7 @@ def test_full_provider_stack_runs_one_optimizer_step(tmp_path):
     trainer = CanonicalTrainer(
         spec=spec,
         dataset=Dataset(),
-        rollout_engine=Engine(),
+        attempt_runner=Engine(),
         objectives=build_objective_composer(spec.objectives),
         optimizer=torch.optim.AdamW(policy.trainable_parameters(), lr=spec.runtime.learning_rate),
         policy_scores=TransformersPolicyScoreProvider(policy),
@@ -258,11 +257,11 @@ def test_rubric_feedback_conditions_teacher_and_makes_loss_positive():
     rollout = training_rollout()
     policy = FakePolicy(VOCAB)
     selections = {
-        rollout.rollout_id: select_tokens(
+        rollout.rollout_id: choose_tokens(
             rollout,
-            objective="sdpo",
-            token_scope=TokenScope.ALL_STUDENT_TOKENS,
-            policy_owner="student",
+            training_method="sdpo",
+            included_text=TokenScope.ALL_STUDENT_TOKENS,
+            student_id="student",
         )
     }
     capabilities = ObjectiveCapabilities(token_scope=TokenScope.ALL_STUDENT_TOKENS)
@@ -325,11 +324,11 @@ def test_sdpo_providers_include_selected_tokens_from_every_generation():
     )
     policy = FakePolicy(VOCAB)
     selections = {
-        rollout.rollout_id: select_tokens(
+        rollout.rollout_id: choose_tokens(
             rollout,
-            objective="sdpo",
-            token_scope=TokenScope.ALL_STUDENT_TOKENS,
-            policy_owner="student",
+            training_method="sdpo",
+            included_text=TokenScope.ALL_STUDENT_TOKENS,
+            student_id="student",
         )
     }
     capabilities = ObjectiveCapabilities(token_scope=TokenScope.ALL_STUDENT_TOKENS)
@@ -420,7 +419,7 @@ def make_bare_trainer(policy_owner: str) -> CanonicalTrainer:
     return CanonicalTrainer(
         spec=spec,
         dataset=object(),
-        rollout_engine=object(),
+        attempt_runner=object(),
         objectives=object(),
         optimizer=object(),
         policy_scores=object(),

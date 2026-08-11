@@ -8,10 +8,18 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from rlm_train.feedback import FeedbackVisibility
-from rlm_train.judge import MemoryJudgeCache, OpenAIJudge, build_judge
-from rlm_train.judge.categorical import CategoricalJudgeAssessment
-from rlm_train.judge.views import JudgeView
+from rlm_train.feedback import (
+    FeedbackView,
+    FeedbackVisibility,
+    create_overall_assessment,
+)
+from rlm_train.judge import (
+    MemoryJudgeCache,
+    OpenAIJudge,
+    SQLiteJudgeCache,
+    create_judge,
+)
+from rlm_train.judge.response_formats import CategoricalJudgeAssessment
 from rlm_train.runtime import ComponentFactory, register_judge_builder
 from rlm_train.spec import AssessmentScope, JudgeMode, JudgeSpec, RunSpec, StudentSpec, TokenScope
 
@@ -31,8 +39,8 @@ class QueuedClient:
         self.responses = QueuedResponses(outputs)
 
 
-def judge_view() -> JudgeView:
-    return JudgeView(
+def feedback_view() -> FeedbackView:
+    return FeedbackView(
         builder_name="test-view-v1",
         scope=AssessmentScope.RETROSPECTIVE_LOCAL,
         focal_node_ids=("root", "child"),
@@ -130,17 +138,50 @@ def test_categorical_openai_judge_returns_cached_scoped_assessment():
     assert "original-task relevance gate" in judge.instructions
     assert "task-relevance-v2" in judge.cache_prompt_version
 
-    first = judge.assess(judge_view())
-    second = judge.assess(judge_view())
+    first = judge.assess(feedback_view())
+    second = judge.assess(feedback_view())
 
     assert first == second
     assert first.provider == "openai:categorical"
     assert first.content["information_significance"] == 1.0
     assert len(client.responses.calls) == 1
     schema = client.responses.calls[0]["text"]["format"]["schema"]
-    assert schema["properties"]["significance"]["$ref"].endswith(
-        "/InformationSignificance"
+    assert schema["properties"]["significance"]["$ref"].endswith("/InformationSignificance")
+
+
+def test_create_judge_wires_configured_sqlite_cache(tmp_path):
+    client = QueuedClient([categorical_payload()])
+    settings = JudgeSpec(
+        provider="openai",
+        model="Qwen/Qwen2.5-7B-Instruct:together",
+        model_revision="revision",
+        mode=JudgeMode.CATEGORICAL,
+        cache_path=tmp_path / "judge.sqlite",
     )
+
+    judge = create_judge(settings, client=client)
+    assert isinstance(judge.cache, SQLiteJudgeCache)
+
+    first = judge.assess(feedback_view())
+    second = judge.assess(feedback_view())
+
+    assert first == second
+    assert len(client.responses.calls) == 1
+    assert settings.cache_path.is_file()
+
+
+def test_overall_feedback_is_restricted_and_not_trainable():
+    local = create_judge(JudgeSpec()).assess(feedback_view())
+
+    overall = create_overall_assessment(
+        (local,),
+        lambda contents: {"assessment_count": len(contents)},
+    )
+
+    assert overall.content == {"assessment_count": 1}
+    assert overall.visibility is FeedbackVisibility.RESTRICTED
+    assert overall.allowed_objectives == frozenset()
+    assert overall.allowed_token_scopes == frozenset()
 
 
 def test_full_openai_judge_retries_out_of_range_numeric_output():
@@ -154,7 +195,7 @@ def test_full_openai_judge_retries_out_of_range_numeric_output():
     )
     judge = OpenAIJudge(spec, client=client)
 
-    assessment = judge.assess(judge_view())
+    assessment = judge.assess(feedback_view())
 
     assert assessment.provider == "openai:full"
     assert assessment.content["information_significance"] == 0.75
@@ -182,8 +223,8 @@ def test_run_spec_selects_mode_and_runtime_factory_builds_configured_judge():
 
     assert spec.judge.mode is JudgeMode.CATEGORICAL
     assert isinstance(components.judge, OpenAIJudge)
-    assert str(components.judge.spec.base_url) == "https://router.huggingface.co/v1"
-    assert build_judge(JudgeSpec()).assess(judge_view()).provider == "fake"
+    assert str(components.judge.settings.base_url) == "https://router.huggingface.co/v1"
+    assert create_judge(JudgeSpec()).assess(feedback_view()).provider == "fake"
 
 
 def test_judge_spec_rejects_markdown_instead_of_accepting_it_as_a_base_url():

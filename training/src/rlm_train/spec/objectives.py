@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -39,8 +40,8 @@ class GRPOSpec(ObjectiveSpec):
 
 class SDPOSpec(ObjectiveSpec):
     feedback_scope: AssessmentScope = AssessmentScope.RETROSPECTIVE_LOCAL
-    divergence: str = "forward_kl"
-    target_support: str = "top_k_with_tail"
+    divergence: Literal["reverse_kl"] = "reverse_kl"
+    target_support: Literal["top_k_with_tail"] = "top_k_with_tail"
     top_k: int = Field(default=32, gt=0)
 
 

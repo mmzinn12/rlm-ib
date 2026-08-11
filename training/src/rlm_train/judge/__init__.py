@@ -1,45 +1,21 @@
-"""Minimal evidence views and scoped judge providers."""
+"""Feedback judges, structured response formats, and assessment caching."""
 
-from rlm_train.judge.aggregation import aggregate_overall_assessment
 from rlm_train.judge.cache import (
     JudgeCache,
     MemoryJudgeCache,
     SQLiteJudgeCache,
-    make_judge_view_cache_key,
 )
-from rlm_train.judge.categorical import (
-    CategoricalJudgeAssessment,
-    EvidenceQuality,
-    InformationLevel,
-    InformationSignificance,
-)
-from rlm_train.judge.full import FullJudgeAssessment
-from rlm_train.judge.prompts import build_judge_instructions, render_judge_view
-from rlm_train.judge.protocol import Judge
-from rlm_train.judge.providers import (
-    DeterministicFakeJudge,
-    OpenAIJudge,
-    build_judge,
-)
-from rlm_train.judge.views import JudgeView, build_judge_view
+from rlm_train.judge.create_judge import create_judge
+from rlm_train.judge.fake_judge import DeterministicFakeJudge
+from rlm_train.judge.judge import FeedbackJudge
+from rlm_train.judge.openai_judge import OpenAIJudge
 
 __all__ = [
-    "CategoricalJudgeAssessment",
     "DeterministicFakeJudge",
-    "EvidenceQuality",
-    "FullJudgeAssessment",
-    "InformationLevel",
-    "InformationSignificance",
-    "Judge",
     "JudgeCache",
-    "JudgeView",
+    "FeedbackJudge",
     "MemoryJudgeCache",
     "OpenAIJudge",
     "SQLiteJudgeCache",
-    "aggregate_overall_assessment",
-    "build_judge",
-    "build_judge_instructions",
-    "build_judge_view",
-    "make_judge_view_cache_key",
-    "render_judge_view",
+    "create_judge",
 ]
