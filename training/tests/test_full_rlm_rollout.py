@@ -27,10 +27,11 @@ class ExactTokenFakePolicy(BaseLM):
         self.lock = threading.Lock()
         self.local = threading.local()
         self.call_count = 0
+        self.prompts = []
 
     def completion(self, prompt):
-        del prompt
         with self.lock:
+            self.prompts.append(prompt)
             response = self.responses.pop(0)
             self.call_count += 1
         self.local.response = response
@@ -57,18 +58,25 @@ class ExactTokenFakePolicy(BaseLM):
 
 
 def test_full_rlm_rollout_records_root_plain_recursive_execution_and_final_answer():
+    policy = ExactTokenFakePolicy()
     engine = RLMRolloutEngine(
-        policy=ExactTokenFakePolicy(),
+        policy=policy,
         policy_owner="student:exact",
         spec=RolloutSpec(max_depth=2, max_iterations=2),
     )
 
     result = engine.execute(
-        RolloutRequest(task_id="task", public_task={"prompt": "solve the task"})
+        RolloutRequest(
+            task_id="task",
+            public_task={"question": "solve the task", "context": "supporting evidence"},
+        )
     )
 
     event_types = [event["event_type"] for event in result.rollout.execution.events]
     assert result.completion.response == "plain response|recursive response"
+    assert "Answer the following: solve the task" in str(policy.prompts[0])
+    root = next(node for node in result.rollout.execution.nodes if node.role.value == "root")
+    assert root.prompt == "supporting evidence"
     assert "code_execution_started" in event_types
     assert "plain_subcall_started" in event_types
     assert "recursive_subcall_started" in event_types

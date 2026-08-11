@@ -31,9 +31,12 @@ class DatasetRefSpec(ImmutableSpec):
     """Reference to a dataset the run should load, independent of any adapter internals.
 
     Attributes:
-        adapter: Name of the loader used to read the records (only ``"jsonl"`` is wired right now).
+        adapter: Dataset loader name: ``"jsonl"`` or ``"hotpotqa"``.
         source: Path or URI to the dataset the adapter reads from.
         split: Named split to load, e.g. ``"train"`` or ``"test"``.
+        subset: Optional Hugging Face dataset configuration/subset name.
+        revision: Optional immutable Hugging Face dataset revision.
+        max_records: Optional deterministic prefix size, useful for bounded Colab runs.
         name: Optional human-facing dataset identifier for provenance.
         version: Optional dataset version tag recorded for reproducibility.
     """
@@ -41,6 +44,9 @@ class DatasetRefSpec(ImmutableSpec):
     adapter: str = "jsonl"
     source: str = Field(min_length=1)
     split: str = Field(default="train", min_length=1)
+    subset: str | None = None
+    revision: str | None = None
+    max_records: int | None = Field(default=None, gt=0)
     name: str | None = None
     version: str | None = None
 

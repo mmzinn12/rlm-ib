@@ -7,6 +7,7 @@ from typing import Any
 from rlm.clients.base_lm import BaseLM
 from rlm.core.rlm import RLM
 
+from rlm_train.datasets.records import require_question_context
 from rlm_train.rollouts.protocol import RolloutRequest, RolloutResult
 from rlm_train.rollouts.recorder import RolloutRecorder
 from rlm_train.spec.rollout import RolloutSpec
@@ -61,9 +62,8 @@ class RLMRolloutEngine:
             policy_owner=self.policy_owner,
         )
         try:
-            prompt: str | dict[str, Any]
-            prompt = request.public_task.get("prompt", request.public_task)
-            completion = rlm.completion(prompt)
+            question, context = require_question_context(request.public_task)
+            completion = rlm.completion(context, root_prompt=question)
         finally:
             rlm.close()
         rollout = recorder.build(result={"final_answer": completion.response})

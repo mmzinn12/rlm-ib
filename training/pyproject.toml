@@ -20,6 +20,7 @@ colab = [
     "transformers==4.57.3",
     "openai>=2.14.0",
 ]
+hub-datasets = ["datasets>=4.0"]
 
 [project.scripts]
 rlm-train-replay = "rlm_train.trajectory.replay:main"

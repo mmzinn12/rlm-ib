@@ -51,6 +51,31 @@ The former Colab-owned trainer, depth-one rollout path, experiment layer, and du
 objective, judge, benchmark, and trajectory implementations have been removed. Each
 training concern now has one implementation under the cohesive packages above.
 
+JSONL datasets use the same public boundary expected at production inference time. The user
+question is shown directly to the root orchestrator, the evidence context is stored in the REPL,
+and the target remains verifier-only:
+
+```json
+{"id":"q1","question":"What is being asked?","context":"Supporting evidence","target":"answer"}
+```
+
+Combined `prompt` records are rejected because they force the policy to discover the task inside
+the evidence payload and create a train–production mismatch.
+
+Hub datasets can be streamed directly with the optional dependency installed via
+`uv sync --extra hub-datasets`. For HotpotQA, the adapter maps `id`, `question`, `context`, and
+`answer` into the same boundary, renders titled evidence sections, and omits privileged
+`supporting_facts`:
+
+```toml
+[training_dataset]
+adapter = "hotpotqa"
+source = "hotpotqa/hotpot_qa"
+subset = "distractor"
+split = "train"
+max_records = 200
+```
+
 ## RunSpec
 
 A run is declared in TOML or JSON and resolved into concrete protocol implementations by

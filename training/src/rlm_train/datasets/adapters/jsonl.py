@@ -12,14 +12,16 @@ from rlm_train.datasets.records import DatasetRecord
 class JSONLDataset:
     """Deterministic dataset backed by a JSON Lines file, one record per non-blank line.
 
-    Each line must be a JSON object with a prompt field and may include an id, a target, and a
-    ``metadata`` object; any other key is rejected. The prompt becomes the record's public task
-    while the target is kept as verifier-owned data, preserving the public/verifier separation.
-    Content is read once at construction, so ``identity`` and ``records`` are stable and hashable.
+    Each line must be a JSON object with distinct question and context fields and may include an
+    id, a target, and a ``metadata`` object; any other key is rejected. The question and evidence
+    context become the public task while the target remains verifier-owned. Keeping these fields
+    separate matches production RLM inference: the question is visible to the orchestrator and
+    only the evidence payload is offloaded into the REPL.
 
     Attributes:
         path: Filesystem path to the JSONL file (must exist at construction).
-        prompt_field: Line key holding the prompt/public task (default ``"prompt"``).
+        question_field: Line key holding the user question (default ``"question"``).
+        context_field: Line key holding the evidence context (default ``"context"``).
         target_field: Line key holding the verifier target, if present (default ``"target"``).
         id_field: Line key holding the record id; falls back to the 1-based line number.
     """
@@ -28,14 +30,16 @@ class JSONLDataset:
         self,
         path: str | Path,
         *,
-        prompt_field: str = "prompt",
+        question_field: str = "question",
+        context_field: str = "context",
         target_field: str = "target",
         id_field: str = "id",
     ) -> None:
         self.path = Path(path)
         if not self.path.is_file():
             raise FileNotFoundError(self.path)
-        self.prompt_field = prompt_field
+        self.question_field = question_field
+        self.context_field = context_field
         self.target_field = target_field
         self.id_field = id_field
         self._content = self.path.read_bytes()
@@ -50,11 +54,16 @@ class JSONLDataset:
             if not line.strip():
                 continue
             payload = json.loads(line)
-            if self.prompt_field not in payload:
-                raise ValueError(f"JSONL line {line_number} is missing {self.prompt_field!r}")
+            missing = {self.question_field, self.context_field} - set(payload)
+            if missing:
+                raise ValueError(
+                    f"JSONL line {line_number} must keep question and context separate; "
+                    f"missing {sorted(missing)!r}"
+                )
             allowed_fields = {
                 self.id_field,
-                self.prompt_field,
+                self.question_field,
+                self.context_field,
                 self.target_field,
                 "metadata",
             }
@@ -64,7 +73,13 @@ class JSONLDataset:
                     f"JSONL line {line_number} has unclassified fields: {sorted(unknown)!r}"
                 )
             record_id = str(payload.get(self.id_field, line_number))
-            public = {"prompt": payload[self.prompt_field]}
+            question = payload[self.question_field]
+            if not isinstance(question, str) or not question.strip():
+                raise ValueError(f"JSONL line {line_number} question must be a non-empty string")
+            context = payload[self.context_field]
+            if context is None:
+                raise ValueError(f"JSONL line {line_number} context must not be null")
+            public = {"question": question, "context": context}
             verifier = payload.get(self.target_field)
             metadata = payload.get("metadata") or {}
             if not isinstance(metadata, dict):

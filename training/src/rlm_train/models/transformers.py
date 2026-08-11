@@ -8,7 +8,6 @@ from typing import Any
 
 from rlm_train.models.identity import PolicyIdentity, TokenizerIdentity
 from rlm_train.models.protocol import (
-    GenerationRequest,
     PolicyScore,
     SampledGeneration,
 )
@@ -53,18 +52,6 @@ class TransformersPolicy(TransformersCompletionAdapter):
     @property
     def policy_owner(self) -> str:
         return self.identity.policy_owner
-
-    def generate(self, request: GenerationRequest) -> SampledGeneration:
-        result = self.generator.generate_tokenized(request.prompt, seed=request.seed)
-        return SampledGeneration(
-            text=result.response,
-            prompt_token_ids=result.prompt_token_ids,
-            token_ids=result.continuation_token_ids,
-            token_offsets=result.continuation_token_offsets,
-            policy=self.identity,
-            tokenizer=self.tokenizer_identity,
-            metadata=result.sampling_metadata or {},
-        )
 
     def score_sampled_ids(
         self,

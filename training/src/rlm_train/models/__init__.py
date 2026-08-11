@@ -2,7 +2,6 @@
 
 from rlm_train.models.identity import ComponentIdentity, PolicyIdentity, TokenizerIdentity
 from rlm_train.models.protocol import (
-    GenerationRequest,
     PolicyScore,
     SampledGeneration,
     TrainablePolicy,
@@ -15,7 +14,6 @@ from rlm_train.models.transformers import (
 
 __all__ = [
     "ComponentIdentity",
-    "GenerationRequest",
     "GenerationConfig",
     "PolicyIdentity",
     "PolicyScore",

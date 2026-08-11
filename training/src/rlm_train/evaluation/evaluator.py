@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rlm_train.datasets.protocol import Dataset
+from rlm_train.datasets.records import require_question_context
 from rlm_train.evaluation.predictions import PredictionsJSONLWriter
 from rlm_train.evaluation.records import RecursiveEvaluationRecord
 from rlm_train.evaluation.runner import RecursiveEvaluationRunner
@@ -42,7 +43,9 @@ class RecursiveEvaluator:
             checkpoint_id=self.checkpoint_id,
             base_seed=self.base_seed,
         )
-        questions = {record.record_id: record.public_task.get("prompt") for record in records}
+        questions = {
+            record.record_id: require_question_context(record.public_task)[0] for record in records
+        }
         writer = PredictionsJSONLWriter(self.output_directory / self.predictions_filename)
         writer.write_all(results, questions=questions)
         return results

@@ -8,6 +8,7 @@ import pytest
 
 from rlm_train.artifacts.build import build_artifact_writer
 from rlm_train.artifacts.rollout_json import RolloutJSONWriter
+from rlm_train.datasets.adapters.hotpotqa import HotpotQADataset
 from rlm_train.datasets.adapters.jsonl import JSONLDataset
 from rlm_train.datasets.build import build_dataset
 from rlm_train.engine.providers import (
@@ -42,15 +43,47 @@ def write_jsonl(path, rows):
 
 
 def test_build_dataset_returns_jsonl_dataset(tmp_path):
-    path = write_jsonl(tmp_path / "d.jsonl", [{"id": "a", "prompt": "q", "target": "t"}])
+    path = write_jsonl(
+        tmp_path / "d.jsonl",
+        [{"id": "a", "question": "q", "context": "evidence", "target": "t"}],
+    )
     dataset = build_dataset(DatasetRefSpec(source=str(path)))
     assert isinstance(dataset, JSONLDataset)
-    assert [record.record_id for record in dataset.records()] == ["a"]
+    records = dataset.records()
+    assert [record.record_id for record in records] == ["a"]
+    assert records[0].public_task == {"question": "q", "context": "evidence"}
+
+
+def test_jsonl_dataset_rejects_combined_legacy_prompt(tmp_path):
+    path = write_jsonl(tmp_path / "legacy.jsonl", [{"id": "a", "prompt": "context + q"}])
+
+    with pytest.raises(ValueError, match="keep question and context separate"):
+        JSONLDataset(path).records()
 
 
 def test_build_dataset_rejects_unknown_adapter(tmp_path):
     with pytest.raises(ValueError, match="unsupported dataset adapter"):
         build_dataset(DatasetRefSpec(adapter="parquet", source=str(tmp_path / "x")))
+
+
+def test_build_dataset_returns_configured_hotpotqa_dataset():
+    dataset = build_dataset(
+        DatasetRefSpec(
+            adapter="hotpotqa",
+            source="hotpotqa/hotpot_qa",
+            subset="distractor",
+            split="train",
+            revision="revision-1",
+            max_records=200,
+        )
+    )
+
+    assert isinstance(dataset, HotpotQADataset)
+    assert dataset.repository == "hotpotqa/hotpot_qa"
+    assert dataset.subset == "distractor"
+    assert dataset.split == "train"
+    assert dataset.revision == "revision-1"
+    assert dataset.max_records == 200
 
 
 def test_build_optimizer_requires_parameters():
@@ -102,7 +135,10 @@ def test_build_teacher_target_provider_rejects_unwired_strategy():
 
 
 def test_build_evaluator_from_spec(tmp_path):
-    eval_path = write_jsonl(tmp_path / "eval.jsonl", [{"id": "e1", "prompt": "q", "target": "t"}])
+    eval_path = write_jsonl(
+        tmp_path / "eval.jsonl",
+        [{"id": "e1", "question": "q", "context": "evidence", "target": "t"}],
+    )
     from rlm_train.evaluation.build import build_evaluator
 
     spec = RunSpec(

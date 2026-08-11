@@ -63,13 +63,13 @@ def write_jsonl(path, rows):
 def test_register_default_builders_resolves_pipeline_from_spec(tmp_path):
     train_path = write_jsonl(
         tmp_path / "train.jsonl",
-        [{"id": "t1", "prompt": "train question", "target": "a"}],
+        [{"id": "t1", "question": "train question", "context": "train evidence", "target": "a"}],
     )
     eval_path = write_jsonl(
         tmp_path / "eval.jsonl",
         [
-            {"id": "e1", "prompt": "first held-out", "target": "a"},
-            {"id": "e2", "prompt": "second held-out", "target": "b"},
+            {"id": "e1", "question": "first held-out", "context": "evidence 1", "target": "a"},
+            {"id": "e2", "question": "second held-out", "context": "evidence 2", "target": "b"},
         ],
     )
     spec = RunSpec(

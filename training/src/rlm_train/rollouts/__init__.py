@@ -4,11 +4,7 @@ from rlm_train.rollouts.protocol import RolloutEngine, RolloutRequest, RolloutRe
 from rlm_train.rollouts.recorder import RolloutRecorder
 from rlm_train.rollouts.rlm_engine import RLMRolloutEngine
 from rlm_train.rollouts.selectors import TokenSelectionResult, select_tokens
-from rlm_train.rollouts.token_alignment import (
-    contained_token_range_for_characters,
-    token_range_for_characters,
-    validate_exact_alignment,
-)
+from rlm_train.rollouts.token_alignment import contained_token_range_for_characters
 
 __all__ = [
     "RLMRolloutEngine",
@@ -19,6 +15,4 @@ __all__ = [
     "TokenSelectionResult",
     "contained_token_range_for_characters",
     "select_tokens",
-    "token_range_for_characters",
-    "validate_exact_alignment",
 ]

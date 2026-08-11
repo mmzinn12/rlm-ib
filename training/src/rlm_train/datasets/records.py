@@ -12,6 +12,14 @@ _VERIFIER_KEYS = frozenset({"target", "target_data", "reference", "reference_ans
 
 
 class DatasetRecord(BaseModel):
+    """A single dataset record with public task and verifier-owned data separated.
+    
+    Attributes: 
+        record_id: The unique identifier for the dataset record.
+        public_task: The portion of the record intended for public consumption.
+        verifier_data: The portion of the record owned by the verifier.
+        metadata: Additional metadata associated with the record.
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     record_id: str = Field(min_length=1)
@@ -48,6 +56,22 @@ class DatasetRecord(BaseModel):
         }
 
 
+def require_question_context(public_task: dict[str, Any]) -> tuple[str, Any]:
+    """Return the production-shaped question and evidence context or fail loudly."""
+    missing = {"question", "context"} - set(public_task)
+    if missing:
+        raise ValueError(
+            f"public task must keep 'question' and 'context' separate; missing {sorted(missing)!r}"
+        )
+    question = public_task["question"]
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("public task 'question' must be a non-empty string")
+    context = public_task["context"]
+    if context is None:
+        raise ValueError("public task 'context' must not be null")
+    return question, context
+
+
 def _find_keys(value: Any, forbidden: frozenset[str]) -> set[str]:
     if isinstance(value, dict):
         found = {str(key) for key in value if str(key).lower() in forbidden}
@@ -59,4 +83,4 @@ def _find_keys(value: Any, forbidden: frozenset[str]) -> set[str]:
     return set()
 
 
-__all__ = ["DatasetRecord"]
+__all__ = ["DatasetRecord", "require_question_context"]

@@ -66,8 +66,14 @@ class LengthScorer:
 
 def held_out_records() -> tuple[DatasetRecord, ...]:
     return (
-        DatasetRecord(record_id="q1", public_task={"prompt": "first question"}),
-        DatasetRecord(record_id="q2", public_task={"prompt": "second question"}),
+        DatasetRecord(
+            record_id="q1",
+            public_task={"question": "first question", "context": "first evidence"},
+        ),
+        DatasetRecord(
+            record_id="q2",
+            public_task={"question": "second question", "context": "second evidence"},
+        ),
     )
 
 

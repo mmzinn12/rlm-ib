@@ -10,15 +10,6 @@ from rlm_train.models.identity import PolicyIdentity, TokenizerIdentity
 
 
 @dataclass(frozen=True)
-class GenerationRequest:
-    prompt: str | dict[str, Any]
-    seed: int
-    max_new_tokens: int | None = None
-    capture_hidden_states: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class SampledGeneration:
     text: str
     prompt_token_ids: tuple[int, ...]
@@ -52,8 +43,6 @@ class TrainablePolicy(Protocol):
     @property
     def tokenizer_identity(self) -> TokenizerIdentity: ...
 
-    def generate(self, request: GenerationRequest) -> SampledGeneration: ...
-
     def score_sampled_ids(
         self,
         generation: SampledGeneration,
@@ -71,7 +60,6 @@ class TrainablePolicy(Protocol):
 
 
 __all__ = [
-    "GenerationRequest",
     "PolicyScore",
     "SampledGeneration",
     "TrainablePolicy",
