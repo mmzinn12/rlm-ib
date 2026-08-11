@@ -127,6 +127,9 @@ def test_categorical_openai_judge_returns_cached_scoped_assessment():
     )
     judge = OpenAIJudge(spec, client=client, cache=cache)
 
+    assert "original-task relevance gate" in judge.instructions
+    assert "task-relevance-v2" in judge.cache_prompt_version
+
     first = judge.assess(judge_view())
     second = judge.assess(judge_view())
 

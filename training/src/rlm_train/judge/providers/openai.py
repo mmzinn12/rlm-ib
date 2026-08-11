@@ -54,7 +54,9 @@ class OpenAIJudge:
 
     @property
     def cache_prompt_version(self) -> str:
-        return f"{self.spec.prompt_version}:{self.spec.schema_name}"
+        # Include the implementation-owned instruction revision so old cached assessments cannot
+        # survive a semantic judge-prompt change when a run keeps the same notebook configuration.
+        return f"{self.spec.prompt_version}:task-relevance-v2:{self.spec.schema_name}"
 
     def assess(self, view: JudgeView) -> ScopedAssessment:
         cache_key = make_judge_view_cache_key(
@@ -134,7 +136,7 @@ class OpenAIJudge:
                 "Return categorical labels only. Use exactly the enum values in the schema. "
                 "Do not invent numeric rating scales. Assess the focal helper question by the "
                 "information revealed in its response relative to the evidence available before "
-                "the call."
+                "the call. Apply the original-task relevance gate before assigning any label."
             )
         else:
             contract = (

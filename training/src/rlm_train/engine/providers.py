@@ -54,11 +54,43 @@ def reconstruct_generation(
     )
 
 
+def generation_edge_ids(rollout: AnnotatedRollout, generation_id: str) -> frozenset[str]:
+    """Return helper edges emitted while executing one student generation.
+
+    Canonical events preserve the active generation and the later helper-question event in the
+    same invocation. Older synthetic or persisted records without generation lifecycle events fall
+    back to node-level association for compatibility.
+    """
+    generation = next(
+        item for item in rollout.annotations.generations if item.generation_id == generation_id
+    )
+    active_generation_by_invocation: dict[str, str] = {}
+    generation_lifecycle_seen = False
+    edge_ids: set[str] = set()
+    for event in rollout.execution.events:
+        event_type = str(event.get("event_type") or "")
+        invocation_id = str(event.get("invocation_id") or "")
+        if event_type in {"student_generation_started", "student_generation_completed"}:
+            if invocation_id == generation.node_id:
+                generation_lifecycle_seen = True
+            active_generation_by_invocation[invocation_id] = str(event.get("generation_id") or "")
+        elif (
+            event_type == "helper_question_generated"
+            and active_generation_by_invocation.get(invocation_id) == generation_id
+        ):
+            edge_ids.add(str(event["subcall_id"]))
+    if generation_lifecycle_seen:
+        return frozenset(edge_ids)
+    return frozenset(
+        edge.edge_id for edge in rollout.execution.edges if edge.parent_id == generation.node_id
+    )
+
+
 def render_rubric_conditioning(
-    rollout: AnnotatedRollout, node_id: str, assessments: tuple[ScopedAssessment, ...]
+    rollout: AnnotatedRollout, generation_id: str, assessments: tuple[ScopedAssessment, ...]
 ) -> str:
-    """Render the judge's rubric feedback for a node's helper questions into a revision hint."""
-    edge_ids = {edge.edge_id for edge in rollout.execution.edges if edge.parent_id == node_id}
+    """Render only the rubric feedback for helper questions from one generation."""
+    edge_ids = generation_edge_ids(rollout, generation_id)
     lines: list[str] = []
     for assessment in assessments:
         if not (set(assessment.focal_edge_ids) & edge_ids):
@@ -160,15 +192,10 @@ class SelfDistillationTeacherTargetProvider:
             topk_logprobs: list[tuple[float, ...]] = []
             tail_logprobs: list[float] = []
             for generation_id, positions in groups:
-                generation_record = next(
-                    item
-                    for item in rollout.annotations.generations
-                    if item.generation_id == generation_id
-                )
                 sampled = reconstruct_generation(rollout, generation_id, self.policy)
-                # Condition the teacher on rubric feedback attached to this generation's node.
+                # Condition the teacher only on feedback for helpers emitted by this generation.
                 conditioning = render_rubric_conditioning(
-                    rollout, generation_record.node_id, feedback.local_assessments
+                    rollout, generation_id, feedback.local_assessments
                 )
                 if conditioning:
                     prefix = tuple(self.policy.tokenize(conditioning + "\n"))
@@ -280,6 +307,7 @@ __all__ = [
     "TransformersPolicyScoreProvider",
     "build_feedback_provider",
     "build_policy_score_provider",
+    "generation_edge_ids",
     "reconstruct_generation",
     "render_rubric_conditioning",
     "selected_generation_positions",

@@ -18,6 +18,7 @@ def test_prompt_files_exist_and_mention_llm_query():
     text = combined_prompt()
     assert "llm_query(" in text
     assert 'answer["ready"]' in text
+    assert "Write the specific helper question here." not in text
 
 
 def test_escaped_prompt_is_format_safe():

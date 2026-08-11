@@ -56,12 +56,9 @@ After reading the first execution result:
 1. Identify the actual question from `context`.
 2. If more evidence is needed, inspect relevant portions of `context` using additional `repl` blocks.
 3. Break the question into focused sub-questions.
-4. Ask each sub-question using a literal string, for example:
-
-```repl
-result = llm_query("Write the specific helper question here.")
-print(result)
-```
+4. Ask each sub-question using a concrete literal string written specifically for the current
+   task. Placeholder or template language is invalid. No example helper question is provided
+   because every question must be derived from the current context.
 
 Each `llm_query` must receive a concrete plain-string question. Do not pass `context`, a variable, an assignment, a factual assertion, or Python code as the helper question. Use `rlm_query` only when the sub-question itself requires multi-step recursive reasoning.
 

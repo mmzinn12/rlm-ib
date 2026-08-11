@@ -12,6 +12,7 @@ from rlm_train.engine.providers import (
     JudgeFeedbackProvider,
     SelfDistillationTeacherTargetProvider,
     TransformersPolicyScoreProvider,
+    generation_edge_ids,
 )
 from rlm_train.engine.trainer import CanonicalTrainer
 from rlm_train.feedback.schema import FeedbackBundle
@@ -353,6 +354,59 @@ def test_sdpo_providers_include_selected_tokens_from_every_generation():
         "g-root-later",
     )
     assert len(target.topk_token_ids) == 6
+
+
+def test_generation_feedback_routes_only_to_helpers_emitted_by_that_generation():
+    rollout = training_rollout()
+    second_generation = rollout.annotations.generations[0].model_copy(
+        update={"generation_id": "g-root-later"}
+    )
+    rollout = rollout.model_copy(
+        update={
+            "execution": rollout.execution.model_copy(
+                update={
+                    "events": (
+                        {
+                            "event_type": "student_generation_completed",
+                            "event_id": "e0",
+                            "sequence_number": 0,
+                            "invocation_id": "root",
+                            "generation_id": "g-root",
+                        },
+                        {
+                            "event_type": "helper_question_generated",
+                            "event_id": "e1",
+                            "sequence_number": 1,
+                            "invocation_id": "root",
+                            "subcall_id": "edge-1",
+                            "question": "ask one",
+                        },
+                        {
+                            "event_type": "student_generation_completed",
+                            "event_id": "e2",
+                            "sequence_number": 2,
+                            "invocation_id": "root",
+                            "generation_id": "g-root-later",
+                        },
+                        {
+                            "event_type": "helper_question_generated",
+                            "event_id": "e3",
+                            "sequence_number": 3,
+                            "invocation_id": "root",
+                            "subcall_id": "edge-2",
+                            "question": "ask two",
+                        },
+                    )
+                }
+            ),
+            "annotations": rollout.annotations.model_copy(
+                update={"generations": (*rollout.annotations.generations, second_generation)}
+            ),
+        }
+    )
+
+    assert generation_edge_ids(rollout, "g-root") == frozenset({"edge-1"})
+    assert generation_edge_ids(rollout, "g-root-later") == frozenset({"edge-2"})
 
 
 def test_build_objective_composer_requires_enabled_objective():

@@ -26,6 +26,14 @@ whether the final answer was correct, or whether the parent ultimately used the 
 can be valuable even when the final answer is wrong, and it can be low-value even when the final
 answer is correct. Consider novelty, uncertainty reduction, evidentiary quality, redundancy, and
 whether the result was misleading or invalid. Describe the concrete information revealed.
+
+Relevance to the original task is a hard gate. If the helper question and its response do not help
+resolve the original task, information significance and uncertainty reduction must be low or none,
+regardless of fluency or factual correctness. An unrelated response must never receive high
+significance or good evidence quality. Treat an unsupported response, a response contradicted by
+the available evidence, or a factually false response as poor or mixed evidence and mark it
+misleading when appropriate. Guidance for improvement must propose a helper question that advances
+the original task rather than merely improving the unrelated question.
 """.strip()
 
 
