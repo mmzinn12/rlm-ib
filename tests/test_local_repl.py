@@ -162,6 +162,24 @@ class TestLocalREPLHelpers:
         assert result.final_answer == "the result"
         repl.cleanup()
 
+    def test_answer_ready_rejects_empty_content(self):
+        """Setting ``ready`` without content must fail and leave the answer unready."""
+        repl = LocalREPL()
+        result = repl.execute_code('answer["ready"] = True')
+        assert "ValueError: answer['content'] must be non-empty" in result.stderr
+        assert result.final_answer is None
+        assert repl.locals["answer"]["ready"] is False
+        repl.cleanup()
+
+    def test_answer_rebind_rejects_empty_content(self):
+        """Rebinding to a ready plain dict must enforce the same non-empty invariant."""
+        repl = LocalREPL()
+        result = repl.execute_code('answer = {"content": " ", "ready": True}')
+        assert "ValueError: answer['content'] must be non-empty" in result.stderr
+        assert result.final_answer is None
+        assert repl.locals["answer"]["ready"] is False
+        repl.cleanup()
+
     def test_answer_ready_false_does_not_surface(self):
         """Mutating ``content`` without flipping ``ready`` must not end the run."""
         repl = LocalREPL()

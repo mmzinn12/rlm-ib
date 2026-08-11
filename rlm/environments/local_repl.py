@@ -77,12 +77,20 @@ class _AnswerDict(dict):
         self._on_ready = on_ready
 
     def __setitem__(self, key, value):
+        if key == "ready" and value:
+            validate_final_answer_content(self.get("content"))
         super().__setitem__(key, value)
         if key == "ready" and value and self._on_ready is not None:
             try:
                 self._on_ready(self.get("content", ""))
             except Exception:
                 pass
+
+
+def validate_final_answer_content(content: Any) -> None:
+    """Reject completion signals that do not contain a substantive answer."""
+    if content is None or not str(content).strip():
+        raise ValueError("answer['content'] must be non-empty before answer['ready'] is set")
 
 
 # =============================================================================
@@ -624,7 +632,13 @@ class LocalREPL(NonIsolatedEnv):
                         for k, v in current.items():
                             dict.__setitem__(replacement, k, v)
                         if current.get("ready") and self._last_final_answer is None:
-                            self._last_final_answer = str(current.get("content", ""))
+                            try:
+                                validate_final_answer_content(current.get("content"))
+                            except ValueError:
+                                dict.__setitem__(replacement, "ready", False)
+                                self.locals["answer"] = replacement
+                                raise
+                            self._last_final_answer = str(current["content"])
                     self.locals["answer"] = replacement
             elif name == "context" and "context_0" in self.locals:
                 self.locals["context"] = self.locals["context_0"]
