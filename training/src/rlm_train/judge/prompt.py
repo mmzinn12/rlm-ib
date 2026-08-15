@@ -7,20 +7,45 @@ import json
 from rlm_train.feedback.feedback_views import FeedbackView
 
 SUBCALL_INFORMATION_VALUE_INSTRUCTIONS = """
-Evaluate each subcall or question by the significance of the information it revealed relative to
-what was available before the call. Do not score it by whether it helped produce the final answer,
-whether the final answer was correct, or whether the parent ultimately used the result. A subcall
-can be valuable even when the final answer is wrong, and it can be low-value even when the final
-answer is correct. Consider novelty, uncertainty reduction, evidentiary quality, redundancy, and
-whether the result was misleading or invalid. Describe the concrete information revealed.
+## AUTHORITATIVE TASK DEFINITION
 
-Relevance to the original task is a hard gate. If the helper question and its response do not help
-resolve the original task, information significance and uncertainty reduction must be low or none,
-regardless of fluency or factual correctness. An unrelated response must never receive high
-significance or good evidence quality. Treat an unsupported response, a response contradicted by
-the available evidence, or a factually false response as poor or mixed evidence and mark it
-misleading when appropriate. Guidance for improvement must propose a helper question that advances
-the original task rather than merely improving the unrelated question.
+- OBJECTIVE: The value of `task.question`.
+- SUPPORTING EVIDENCE: The value of `task.context`.
+- IMPORTANT: Context passages are evidence, not separate tasks.
+- Ignore a passage’s topic unless it helps answer the question.
+
+## EVALUATION TARGET
+
+Evaluate only:
+1. The helper question.
+2. The helper response.
+3. Information explicitly contained in that response.
+
+Do not credit facts merely present in the task context.
+Do not infer facts the helper response did not state.
+
+## DECISION PROCEDURE
+
+1. Restate the objective from `task.question`.
+2. Identify the factual claims made by the helper response.
+3. Compare those claims with the supplied context.
+4. Determine whether they reduce uncertainty about the objective.
+5. Mark unsupported or contradicted claims as misleading.
+6. Populate the output schema.
+
+## REQUIRED
+
+- Treat `task.question` as the original task.
+- Distinguish the context corpus from the task objective.
+- Report only information actually revealed by the helper response.
+- Check factual claims against the provided context.
+
+## FORBIDDEN
+
+- Do not treat the first context passage as the original task.
+- Do not reward a helper response merely because its conclusion is correct.
+- Do not supply missing facts from your own knowledge.
+- Do not claim the response revealed facts that appear only in context.
 """.strip()
 
 

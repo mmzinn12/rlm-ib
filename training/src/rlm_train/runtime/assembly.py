@@ -105,6 +105,13 @@ def precision_context_factory(precision: str) -> Callable[[], AbstractContextMan
     return factory
 
 
+def build_uncertainty_provider(run: RunSpec, *, policy: Any) -> Any | None:
+    """Build the optional student-specific semantic uncertainty provider."""
+    from rlm_train.uncertainty.build import build_uncertainty_provider as build
+
+    return build(run, policy=policy)
+
+
 def build_canonical_trainer(
     run: RunSpec,
     *,
@@ -158,6 +165,7 @@ def build_canonical_trainer(
             resume_checkpoint,
             run_spec_fingerprint=run.fingerprint,
         )
+    uncertainty = build_uncertainty_provider(run, policy=policy)
     return CanonicalTrainer(
         spec=run,
         dataset=build_dataset(run.training_dataset),
@@ -169,6 +177,7 @@ def build_canonical_trainer(
         policy_owner=run.student.resolved_policy_owner,
         policy_parameters=parameters,
         feedback=build_feedback_provider(judge),
+        uncertainty=uncertainty,
         teacher_targets=build_teacher_target_provider(
             run.teacher, policy=policy, top_k=run.objectives.sdpo.top_k
         ),
@@ -219,6 +228,8 @@ def assemble_default_factory(
 
     factory.register("policy", lambda run: policy)
     factory.register("judge", lambda run: judge)
+    if spec.uncertainty.enabled:
+        factory.register("uncertainty", lambda run: build_uncertainty_provider(run, policy=policy))
     factory.register("dataset", lambda run: build_dataset(run.training_dataset))
     factory.register(
         "attempt_runner", lambda run: create_attempt_runner(run, student_client=policy)
@@ -251,6 +262,7 @@ __all__ = [
     "assemble_default_factory",
     "build_canonical_trainer",
     "build_dataset",
+    "build_uncertainty_provider",
     "create_attempt_runner",
     "precision_context_factory",
     "register_default_builders",

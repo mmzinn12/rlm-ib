@@ -19,6 +19,7 @@ CLI / gateways
     -> training loop
        -> attempt runner -> rlm core
        -> judge -> feedback
+       -> uncertainty -> per-edge quantitative measurements
        -> token selection
        -> student and feedback-conditioned scoring
        -> training-method loss
@@ -42,6 +43,9 @@ The main training packages are:
 - `trajectory/`: durable annotated rollout schema, validation, projection, and replay.
 - `feedback/` and `judge/`: minimal typed evidence views, visibility enforcement,
   scoped assessments, and one-way overall aggregation.
+- `uncertainty/` and `engine/uncertainty_provider.py`: direct-answer student sampling,
+  shared semantic clustering, probability-weighted entropy, and causal before/after edge
+  measurements. This package never depends on judge feedback or objectives.
 - `sdpo/`, `grpo/`, and `gram/`: method-specific settings and loss calculations. SDPO
   additionally owns feedback-prompt construction and detached feedback predictions.
 - `datasets/` and `evaluation/`: public/private task separation and whole-policy scoring.
@@ -118,12 +122,48 @@ metrics_jsonl = true
 checkpoint_interval = 100
 retain_checkpoints = 1
 save_final_checkpoint = true
+
+[uncertainty]
+enabled = true
+estimator = "semantic_entropy"
+estimator_version = "semantic-entropy-v1-natural-log"
+sample_count = 10
+temperature = 0.5
+top_p = 1.0
+max_new_tokens = 32
+prompt_version = "direct-answer-v1"
+equivalence_provider = "transformers_nli"
+equivalence_model = "microsoft/deberta-large-mnli"
+# Replace this example with an immutable Hub commit for the selected model.
+equivalence_model_revision = "<pinned-hub-commit>"
 ```
 
 Every enabled objective selects its own token scope: `natural_language`,
 `helper_questions`, `subcall_natural_language`, or `all_student_tokens`. Selections are
 stored as explainable ranges and reconstructed as runtime masks. Only tokens owned by the
 configured student can be active.
+
+### Semantic uncertainty measurements
+
+When enabled, semantic uncertainty is measured before the optimizer step that consumes a
+rollout. For each helper edge, the provider asks the frozen student for matched direct-answer
+samples under two prompts. The before prompt contains the public task, public context, and the
+already-generated helper question; the after prompt differs only by revealing that helper's exact
+completed response. Root final answers, future events, sibling results, and verifier references
+are never included.
+
+Samples retain exact continuation IDs and per-token behavior log probabilities. Answers from both
+conditions are pooled into one question-conditioned semantic partition using bidirectional NLI
+entailment. The implementation reports natural-log Shannon entropy reduction and Jensen-Shannon
+distribution shift separately. Lower entropy is not treated as correctness or evidence quality;
+misleading-information labels remain solely in judge feedback. There is no frequency-only fallback
+when behavior log probabilities are unavailable.
+
+The cost per assessed edge is `2 * sample_count` student generations plus semantic-equivalence
+comparisons. The deterministic complete-link clustering rule can require quadratically many NLI
+comparisons in the number of pooled samples. Use `max_edges_per_rollout` as an explicit, persisted
+cost bound when needed. The method follows Kuhn, Gal, and Farquhar's
+[semantic uncertainty estimator](https://arxiv.org/abs/2302.09664).
 
 ### Configurable LLM judge output
 

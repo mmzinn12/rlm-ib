@@ -58,6 +58,12 @@ class FeedbackProvider(Protocol):
     ) -> FeedbackBundle: ...
 
 
+class EdgeUncertaintyProvider(Protocol):
+    def assess_rollout(
+        self, record: DatasetRecord, rollout: AnnotatedRollout
+    ) -> tuple[Any, ...]: ...
+
+
 class TeacherTargetProvider(Protocol):
     """Build detached targets for the exact selected sampled tokens."""
 
@@ -135,6 +141,7 @@ class CanonicalTrainer:
         policy_parameters: Iterable[Any],
         rewards: RewardProvider | None = None,
         feedback: FeedbackProvider | None = None,
+        uncertainty: EdgeUncertaintyProvider | None = None,
         teacher_targets: TeacherTargetProvider | None = None,
         teachers: Iterable[Teacher] = (),
         scheduler: Any | None = None,
@@ -157,6 +164,7 @@ class CanonicalTrainer:
         self.policy_parameters = tuple(policy_parameters)
         self.rewards = rewards
         self.feedback = feedback
+        self.uncertainty = uncertainty
         self.teacher_targets = teacher_targets
         self.teachers = tuple(teachers)
         self.scheduler = scheduler
@@ -231,7 +239,9 @@ class CanonicalTrainer:
                     )
                 rollouts = self._attach_selections(rollouts, selection_batches)
                 reward_batch = self._prepare_rewards(record, rollouts, requirements)
-                feedback_bundle = self._prepare_feedback(record, rollouts, requirements)
+                feedback_bundle = self._prepare_feedback(
+                    record, rollouts, requirements, step=optimizer_step
+                )
 
                 with self.precision_context():
                     batches, targets = self._prepare_objective_batches(
@@ -303,6 +313,8 @@ class CanonicalTrainer:
             raise ValueError("enabled objectives require a scoped feedback provider")
         if requirements.teacher_targets and self.teacher_targets is None:
             raise ValueError("enabled objectives require a teacher-target provider")
+        if self.spec.uncertainty.enabled and self.uncertainty is None:
+            raise ValueError("enabled uncertainty measurement requires an uncertainty provider")
 
     def _execute_rollouts(
         self,
@@ -373,11 +385,55 @@ class CanonicalTrainer:
         record: DatasetRecord,
         rollouts: tuple[AnnotatedRollout, ...],
         requirements: BatchRequirements,
+        *,
+        step: int,
     ) -> FeedbackBundle:
-        if not requirements.feedback_scopes:
-            return FeedbackBundle()
-        assert self.feedback is not None
-        return self.feedback.assess(record, rollouts, requirements.feedback_scopes)
+        bundle = FeedbackBundle()
+        if requirements.feedback_scopes:
+            assert self.feedback is not None
+            bundle = self.feedback.assess(record, rollouts, requirements.feedback_scopes)
+        if self.spec.uncertainty.enabled:
+            assert self.uncertainty is not None
+            measurements = tuple(
+                measurement
+                for rollout in rollouts
+                for measurement in self.uncertainty.assess_rollout(record, rollout)
+            )
+            bundle = bundle.model_copy(update={"uncertainty_assessments": measurements})
+            self._record_uncertainty_metrics(step, measurements)
+        return bundle
+
+    def _record_uncertainty_metrics(self, step: int, measurements: tuple[Any, ...]) -> None:
+        for item in measurements:
+            context = {
+                "rollout_id": item.rollout_id,
+                "edge_id": item.edge_id,
+                "checkpoint_identity": item.before.model_identity,
+                "estimator_version": item.before.estimator_version,
+                "prompt_version": item.before.prompt_provenance.get("version", "direct-answer-v1"),
+            }
+            values = {
+                "uncertainty/semantic_entropy_before": item.before.entropy,
+                "uncertainty/semantic_entropy_after": item.after.entropy,
+                "uncertainty/entropy_reduction": item.absolute_entropy_reduction,
+                "uncertainty/semantic_distribution_shift": item.semantic_distribution_shift,
+                "uncertainty/cluster_count_before": float(item.before.cluster_count),
+                "uncertainty/cluster_count_after": float(item.after.cluster_count),
+                "uncertainty/sampling_seconds": item.sampling_seconds,
+                "uncertainty/equivalence_seconds": item.equivalence_seconds,
+            }
+            if item.normalized_entropy_reduction is not None:
+                values["uncertainty/normalized_entropy_reduction"] = (
+                    item.normalized_entropy_reduction
+                )
+            for name, value in values.items():
+                observation = MetricObservation(
+                    name=name, value=float(value), step=step, context=context
+                )
+                if self.metric_recorder is not None:
+                    self.metric_recorder.record(observation)
+                if self.metric_sink is not None:
+                    self.metric_sink.write(observation)
 
     def _prepare_objective_batches(
         self,
@@ -524,6 +580,9 @@ def _feedback_record(bundle: FeedbackBundle) -> FeedbackRecord:
             bundle.overall_assessment.model_dump(mode="json")
             if bundle.overall_assessment is not None
             else {}
+        ),
+        uncertainty_assessments=tuple(
+            item.model_dump(mode="json") for item in bundle.uncertainty_assessments
         ),
     )
 

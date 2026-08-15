@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rlm_train.spec.feedback import AssessmentScope
 from rlm_train.spec.objectives import TokenScope
+from rlm_train.uncertainty.schema import UncertaintyReduction
 
 
 class ImmutableFeedback(BaseModel):
@@ -81,6 +82,7 @@ class FeedbackBundle(ImmutableFeedback):
     local_assessments: tuple[ScopedAssessment, ...] = ()
     projections: tuple[FeedbackProjection, ...] = ()
     overall_assessment: ScopedAssessment | None = None
+    uncertainty_assessments: tuple[UncertaintyReduction, ...] = ()
 
     @model_validator(mode="after")
     def validate_unique_ids(self) -> FeedbackBundle:
@@ -89,6 +91,11 @@ class FeedbackBundle(ImmutableFeedback):
             identifiers.append(self.overall_assessment.assessment_id)
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("feedback assessment IDs must be unique")
+        uncertainty_ids = [
+            (item.rollout_id, item.edge_id) for item in self.uncertainty_assessments
+        ]
+        if len(uncertainty_ids) != len(set(uncertainty_ids)):
+            raise ValueError("uncertainty assessments must be unique per rollout edge")
         return self
 
 

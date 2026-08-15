@@ -12,6 +12,7 @@ from rlm_train.settings.training_methods import (
     SDPOSettings,
     TrainingMethodsSettings,
 )
+from rlm_train.settings.uncertainty import UncertaintySettings
 
 __all__ = [
     "AssessmentScope",
@@ -28,4 +29,5 @@ __all__ = [
     "StudentSettings",
     "TokenScope",
     "TrainingMethodsSettings",
+    "UncertaintySettings",
 ]

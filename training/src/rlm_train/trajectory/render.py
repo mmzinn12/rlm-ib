@@ -92,6 +92,9 @@ def render_recursion_tree(rollout: AnnotatedRollout, *, max_text_chars: int = 20
     for edge in rollout.execution.edges:
         edges_by_parent[edge.parent_id].append(edge)
     by_edge, by_node = index_assessments(rollout.feedback.judge_assessments)
+    uncertainty_by_edge = {
+        item["edge_id"]: item for item in rollout.feedback.uncertainty_assessments
+    }
 
     lines = [
         f"Rollout {rollout.rollout_id}  (mode={rollout.mode})",
@@ -130,6 +133,15 @@ def render_recursion_tree(rollout: AnnotatedRollout, *, max_text_chars: int = 20
                 diagnostic = (assessment.get("content") or {}).get("diagnostic")
                 if diagnostic:
                     lines.append(f"{branch_prefix}   \u00b7 {shorten(diagnostic, max_text_chars)}")
+            uncertainty = uncertainty_by_edge.get(edge.edge_id)
+            if uncertainty is not None:
+                lines.append(
+                    f"{branch_prefix}uncertainty: "
+                    f"H {uncertainty['before']['entropy']:.3f} \u2192 "
+                    f"{uncertainty['after']['entropy']:.3f}; "
+                    f"\u0394H={uncertainty['absolute_entropy_reduction']:.3f}; "
+                    f"JS={uncertainty['semantic_distribution_shift']:.3f}"
+                )
             walk(edge.child_id, branch_prefix)
 
     walk(root.node_id, "")

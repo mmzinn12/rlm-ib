@@ -184,6 +184,7 @@ class FeedbackRecord(ImmutableRecord):
     judge_assessments: tuple[dict[str, Any], ...] = ()
     projections: tuple[dict[str, Any], ...] = ()
     overall_assessment: dict[str, Any] = Field(default_factory=dict)
+    uncertainty_assessments: tuple[dict[str, Any], ...] = ()
 
 
 class AnnotatedRollout(ImmutableRecord):

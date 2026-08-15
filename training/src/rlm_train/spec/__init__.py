@@ -13,6 +13,7 @@ from rlm_train.spec.objectives import (
 )
 from rlm_train.spec.rollout import RolloutSpec
 from rlm_train.spec.run import DatasetRefSpec, RunSpec, RuntimeSpec
+from rlm_train.spec.uncertainty import UncertaintySpec
 
 __all__ = [
     "ArtifactSpec",
@@ -33,4 +34,5 @@ __all__ = [
     "TeacherSpec",
     "TeacherStrategy",
     "TokenScope",
+    "UncertaintySpec",
 ]

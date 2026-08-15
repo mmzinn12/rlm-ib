@@ -69,6 +69,7 @@ class TrainingLoop:
         dataset: DatasetSource,
         attempt_runner: AttemptRunner,
         feedback_collector: FeedbackCollector,
+        uncertainty_provider: Any | None = None,
         student: TrainableStudent,
         training_methods: Iterable[TrainingMethod],
         optimizer: Any,
@@ -85,6 +86,7 @@ class TrainingLoop:
         self.dataset = dataset
         self.attempt_runner = attempt_runner
         self.feedback_collector = feedback_collector
+        self.uncertainty_provider = uncertainty_provider
         self.student = student
         self.training_methods = tuple(training_methods)
         self.optimizer = optimizer
@@ -98,6 +100,8 @@ class TrainingLoop:
         self.verbose = verbose
         if not self.training_methods:
             raise ValueError("training loop requires at least one enabled training method")
+        if self.run_settings.uncertainty.enabled and self.uncertainty_provider is None:
+            raise ValueError("enabled uncertainty measurement requires an uncertainty provider")
 
     def train(self) -> TrainingResult:
         from rlm_train.sdpo import score_with_feedback
@@ -132,6 +136,14 @@ class TrainingLoop:
                 record_index += 1
 
                 feedback = self.feedback_collector.collect(attempts, requirements.feedback_scopes)
+                if self.run_settings.uncertainty.enabled:
+                    measurements = tuple(
+                        measurement
+                        for attempt in attempts
+                        for measurement in self.uncertainty_provider.assess_rollout(record, attempt)
+                    )
+                    feedback = feedback.model_copy(update={"uncertainty_assessments": measurements})
+                    self.record_uncertainty_metrics(optimizer_step, measurements)
                 student_predictions = {
                     method.name: score_selected_tokens(
                         student=self.student,
@@ -338,6 +350,36 @@ class TrainingLoop:
         ):
             self.metric_sink.write(observation)
 
+    def record_uncertainty_metrics(self, step: int, measurements: tuple[Any, ...]) -> None:
+        if self.metric_sink is None:
+            return
+        for item in measurements:
+            context = {
+                "rollout_id": item.rollout_id,
+                "edge_id": item.edge_id,
+                "checkpoint_identity": item.before.model_identity,
+                "estimator_version": item.before.estimator_version,
+                "prompt_version": item.before.prompt_provenance.get("version", "unknown"),
+            }
+            values = {
+                "uncertainty/semantic_entropy_before": item.before.entropy,
+                "uncertainty/semantic_entropy_after": item.after.entropy,
+                "uncertainty/entropy_reduction": item.absolute_entropy_reduction,
+                "uncertainty/semantic_distribution_shift": item.semantic_distribution_shift,
+                "uncertainty/cluster_count_before": item.before.cluster_count,
+                "uncertainty/cluster_count_after": item.after.cluster_count,
+                "uncertainty/sampling_seconds": item.sampling_seconds,
+                "uncertainty/equivalence_seconds": item.equivalence_seconds,
+            }
+            if item.normalized_entropy_reduction is not None:
+                values["uncertainty/normalized_entropy_reduction"] = (
+                    item.normalized_entropy_reduction
+                )
+            for name, value in values.items():
+                self.metric_sink.write(
+                    MetricObservation(name=name, value=float(value), step=step, context=context)
+                )
+
     def verbose_print(self, message: str) -> None:
         if self.verbose:
             print(f"[train] {message}", flush=True)
@@ -427,6 +469,9 @@ def feedback_record(bundle: FeedbackBundle) -> FeedbackRecord:
             bundle.overall_assessment.model_dump(mode="json")
             if bundle.overall_assessment is not None
             else {}
+        ),
+        uncertainty_assessments=tuple(
+            item.model_dump(mode="json") for item in bundle.uncertainty_assessments
         ),
     )
 

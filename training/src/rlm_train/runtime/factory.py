@@ -30,6 +30,7 @@ class ResolvedComponents:
     judge: Any | None = None
     teacher: Any | None = None
     metrics: Any | None = None
+    uncertainty: Any | None = None
     artifacts: Any | None = None
     identities: dict[str, Any] | None = None
 

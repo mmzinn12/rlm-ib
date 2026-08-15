@@ -23,6 +23,7 @@ from rlm_train.spec.feedback import AssessmentScope, FeedbackSpec
 from rlm_train.spec.models import ImmutableSpec, JudgeSpec, StudentSpec, TeacherSpec
 from rlm_train.spec.objectives import ObjectivesSpec
 from rlm_train.spec.rollout import RolloutSpec
+from rlm_train.spec.uncertainty import UncertaintySpec
 
 RUN_SPEC_SCHEMA_VERSION = 1
 
@@ -112,6 +113,7 @@ class RunSpec(ImmutableSpec):
     judge: JudgeSpec = Field(default_factory=JudgeSpec)
     teacher: TeacherSpec = Field(default_factory=TeacherSpec)
     feedback: FeedbackSpec = Field(default_factory=FeedbackSpec)
+    uncertainty: UncertaintySpec = Field(default_factory=UncertaintySpec)
     objectives: ObjectivesSpec = Field(default_factory=ObjectivesSpec)
     training_dataset: DatasetRefSpec | None = None
     evaluation_datasets: tuple[DatasetRefSpec, ...] = ()

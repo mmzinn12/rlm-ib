@@ -21,6 +21,7 @@ from rlm_train.training.optimizer import create_optimizer
 from rlm_train.training.requirements import TrainingRequirements
 from rlm_train.training.scheduler import create_scheduler
 from rlm_train.training.training_loop import TrainingLoop
+from rlm_train.uncertainty.build import build_uncertainty_provider
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ def create_training_run(
         dataset=build_dataset(settings.training_dataset),
         attempt_runner=create_attempt_runner(settings, student_client=student),
         feedback_collector=FeedbackCollector(judge),
+        uncertainty_provider=build_uncertainty_provider(settings, policy=student),
         student=student,
         training_methods=create_training_methods(settings.objectives),
         optimizer=optimizer,
